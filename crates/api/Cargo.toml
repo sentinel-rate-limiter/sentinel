@@ -1,0 +1,28 @@
+[package]
+name = "api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Own library
+core = {path="../core"}
+
+# Env Variables
+dotenvy = "0.15"
+
+# Runtime Async
+tokio = {version = "1", features=["full"]}
+
+# Web Framework
+axum = "0.7"
+
+# Error Handling and HTTP logging
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["trace"] }
+
+# Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Database SQL (Postgres)
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json"] }
