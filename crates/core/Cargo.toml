@@ -26,3 +26,13 @@ tokio = { version = "1", features = ["full"] }
 # Redi + Polling
 redis = { version = "0.24", features = ["tokio-comp"] }
 deadpool-redis = "0.14"
+
+# Local Cache
+moka = { version = "0.12", features = ["future"] }
+
+# Routes support 
+glob = "0.3"
+
+# Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

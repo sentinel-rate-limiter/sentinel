@@ -83,3 +83,14 @@ pub struct UsageMetric {
     pub request_count: i64,
     pub total_cost: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageEvent{
+  pub event_id: Uuid,
+  pub org_id: Option<Uuid>,
+  pub rule_id: Option<Uuid>,
+  pub user_id: String,
+  pub cost: u32,
+  pub timestamp: DateTime<Utc>,
+  pub status: String
+}
