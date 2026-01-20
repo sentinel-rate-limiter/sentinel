@@ -46,6 +46,7 @@ dependencies = [
  "axum",
  "core",
  "dotenvy",
+ "moka",
  "rdkafka",
  "serde",
  "serde_json",

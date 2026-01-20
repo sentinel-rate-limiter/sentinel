@@ -59,9 +59,9 @@ pub struct RateLimitTokens{
 pub async fn check_rate_limit(
   conn: &mut Connection,
   key: &str,
-  limit: u32,
-  period_seconds: u32,
-  cost: u32
+  limit: i32,
+  period_seconds: i32,
+  cost: i32
 ) -> Result<RateLimitTokens,String>{
   // Get current time in seconds
   let now = SystemTime::now()

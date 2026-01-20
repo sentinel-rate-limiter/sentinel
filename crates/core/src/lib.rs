@@ -2,7 +2,7 @@ pub mod models;
 pub mod database;
 pub mod cache;
 pub mod limiter;
-mod rules_manager;
+pub mod rules_manager;
 
 pub use sqlx;
 pub use chrono;

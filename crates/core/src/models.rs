@@ -52,7 +52,7 @@ pub struct Rule {
     pub id: Uuid,
     pub policy_id: Uuid,
     pub algorithm: LimitAlgorithm,
-    pub resource_path: Option<String>,
+    pub resource_path: String,
     
     // Accept some generic json
     pub match_condition: Option<Json<serde_json::Value>>, 
@@ -90,7 +90,7 @@ pub struct UsageEvent{
   pub org_id: Option<Uuid>,
   pub rule_id: Option<Uuid>,
   pub user_id: String,
-  pub cost: u32,
+  pub cost: i32,
   pub timestamp: DateTime<Utc>,
   pub status: String
 }

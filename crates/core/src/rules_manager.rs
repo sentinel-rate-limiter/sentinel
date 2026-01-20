@@ -5,27 +5,17 @@ use uuid::Uuid;
 use deadpool_redis::redis::AsyncCommands;
 use glob::Pattern;
 use moka::future::Cache;
+use sqlx::types::Json;
 
-pub type LocalCache = Cache<Uuid,Vec<CachedRule>>;
+pub type LocalCache = Cache<Uuid,Vec<Rule>>;
 
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-struct CachedRule {
-    pub id: Uuid,
-    pub path_pattern: String,
-    pub limit: u32,
-    pub period: u32,
-    pub cost: u32,
-    pub algorithm: LimitAlgorithm,
-    pub priority: i32,
-}
 
 pub async fn get_policy_rules(
   db: &PgPool,
   redis: &RedisPool,
   local_cache: &LocalCache,
   policy_id: Uuid
-) -> Result<Vec<CachedRule>,String> {
+) -> Result<Vec<Rule>,String> {
 
 
   if let Some(rules) = local_cache.get(&policy_id).await {
@@ -33,11 +23,11 @@ pub async fn get_policy_rules(
     return Ok(rules)
   }
 
-  
+  let rules = fetch_from_infra(db, redis, policy_id).await?;
 
-  Err("a".to_string())
+  local_cache.insert(policy_id, rules.clone()).await;
 
-
+  Ok(rules)
 }
 
 
@@ -45,7 +35,7 @@ pub async fn fetch_from_infra(
   db: &PgPool,
   redis: &RedisPool,
   policy_id: Uuid
-) -> Result<Vec<CachedRule>, String>{
+) -> Result<Vec<Rule>, String>{
   let redis_key = format!("policy_rules:{}", policy_id);
   let mut conn = redis.get().await.map_err(|error| error.to_string())?;
 
@@ -66,8 +56,12 @@ pub async fn fetch_from_infra(
         r#"
         SELECT 
             id, policy_id, algorithm as "algorithm!: LimitAlgorithm", 
-            resource_path, match_condition, priority, 
-            limit_amount, period_seconds, cost_per_request, created_at
+            resource_path, match_condition as "match_condition?: Json<serde_json::Value>", 
+            priority, 
+            limit_amount, 
+            period_seconds, 
+            cost_per_request, 
+            created_at
         FROM rules
         WHERE policy_id = $1
         ORDER BY priority DESC
@@ -78,5 +72,24 @@ pub async fn fetch_from_infra(
     .await
     .map_err(|e| e.to_string())?;
 
-  Err("a".to_string())
+  let rules: Vec<Rule> = rows;
+
+  if !rules.is_empty() {
+    let json_val = serde_json::to_string(&rules).unwrap();
+    let _: () = conn.set_ex(&redis_key, json_val, 600).await.map_err(|error| error.to_string())?;
+  }
+
+  Ok(rules)
+}
+
+
+pub fn match_rule(rules: &[Rule], request_path: &str) -> Option<Rule> {
+  for rule in rules {
+    if let Ok(pattern) = Pattern::new(&rule.resource_path){
+      if pattern.matches(request_path) {
+        return Some(rule.clone());
+      }
+    }
+  };
+  None
 }
