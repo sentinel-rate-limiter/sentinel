@@ -90,7 +90,7 @@ pub struct UsageEvent{
   pub org_id: Uuid,
   pub rule_id: Uuid,
   pub policy_id: Uuid,
-  pub identity_id: Uuid,
+  pub identity_id: String,
   pub cost: i32,
   pub timestamp: DateTime<Utc>,
   pub status: String

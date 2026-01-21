@@ -12,7 +12,7 @@ pub async fn get_billing_anchor(
   db: &PgPool,
   redis: &mut Connection,
   local_cache: &LocalAnchorCache,
-  user_external_id: Uuid,
+  user_external_id: &String,
   org_id: Uuid
 ) -> Result<DateTime<Utc>, String>{
   

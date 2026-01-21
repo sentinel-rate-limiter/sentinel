@@ -69,19 +69,19 @@ pub async fn check_monthly_quota(
   rule_id: Uuid,
   limit: i64,
   cost: i32,
-  user_id: Uuid
+  user_id: &String
 ) -> Result<AccessDecision,String>
 {
 
 
-  let billing_anchor = get_billing_anchor(db, conn, anchor_cache, user_id, org_id).await?;
+  let billing_anchor = get_billing_anchor(db, conn, anchor_cache, &user_id, org_id).await?;
 
 
   let now = Utc::now();
   let cycle_start = get_current_cycle_start(billing_anchor, now);
   let date_part = cycle_start.format("%Y-%m-%d").to_string();
 
-  let key = format!("quota:{}:{}:{}:{}:{}", org_id, user_id, policy_id, rule_id, date_part);
+  let key = format!("quota:{}:{}:{}:{}:{}", org_id, &user_id, policy_id, rule_id, date_part);
 
   let ttl = 60 * 60 * 24 * 31;
 
@@ -102,7 +102,7 @@ pub async fn check_monthly_quota(
         SELECT COALESCE(SUM(total_cost), 0)::BIGINT as "total!"
         FROM usage_metrics
         WHERE org_id = $1 
-          AND identity_id = $2 
+          AND external_id = $2 
           AND rule_id = $3 
           AND time_bucket >= $4
         "#,

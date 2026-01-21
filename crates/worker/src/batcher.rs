@@ -9,7 +9,7 @@ pub struct MetricKey{
   time_bucket: DateTime<Utc>,
   org_id: Uuid,
   rule_id: Uuid,
-  identity_id: Uuid,
+  identity_id: String,
   status: String
 }
 #[derive(Debug)]
@@ -59,9 +59,9 @@ impl Batcher {
     for (key,val) in self.buffer.drain() {
       sqlx::query!(
             r#"
-            INSERT INTO usage_metrics (time_bucket, org_id, rule_id, identity_id, request_count, total_cost)
+            INSERT INTO usage_metrics (time_bucket, org_id, rule_id, external_id, request_count, total_cost)
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (time_bucket, org_id, rule_id, identity_id) 
+            ON CONFLICT (time_bucket, org_id, rule_id, external_id) 
             DO UPDATE SET 
                 request_count = usage_metrics.request_count + EXCLUDED.request_count,
                 total_cost = usage_metrics.total_cost + EXCLUDED.total_cost

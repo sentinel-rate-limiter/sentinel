@@ -1,5 +1,6 @@
 mod state;
 mod kafka;
+mod auth;
 
 use axum::{Router, extract::State, http::StatusCode, routing::get, routing::post,Json};
 use dotenvy::dotenv;
@@ -86,7 +87,7 @@ async fn health_check(State(state): State<AppState>) ->Result<String, StatusCode
 
 #[derive(Deserialize)]
 struct CheckRequest {
-    user_id: Uuid,
+    user_id: String,
     policy_id: Uuid,
     org_id: Uuid,
     request_path: String
@@ -121,13 +122,13 @@ async fn handle_check_request(State(state): State<AppState>, Json(payload): Json
  
 
     let result = if rule.algorithm == LimitAlgorithm::TokenBucket{
-        let key = format!("limiter:{}:{}:{}", payload.org_id, rule.id, payload.user_id);
+        let key = format!("limiter:{}:{}:{}", payload.org_id, rule.id, &payload.user_id);
         check_rate_limit(&mut conn, &key, rule.limit_amount, rule.period_seconds, rule.cost_per_request).await.map_err(|e| {
         tracing::error!("Limit error: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
         })?
     } else {
-        check_monthly_quota(&mut conn, &state.db , &state.local_anchor_cache , payload.org_id,payload.policy_id,rule.id,rule.limit_amount, rule.cost_per_request, payload.user_id).await.map_err(|e| {
+        check_monthly_quota(&mut conn, &state.db , &state.local_anchor_cache , payload.org_id,payload.policy_id,rule.id,rule.limit_amount, rule.cost_per_request, &payload.user_id).await.map_err(|e| {
         tracing::error!("Limit error: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
         })?
@@ -143,13 +144,13 @@ async fn handle_check_request(State(state): State<AppState>, Json(payload): Json
                 rule_id: rule.id,
                 policy_id: payload.policy_id,
                 cost: rule.cost_per_request,
-                identity_id: payload.user_id,
+                identity_id: payload.user_id.clone(),
                 timestamp: Utc::now(),
                 status: if result.allowed {"ALLOWED".to_string()} else {"DENIED".to_string()}
             };
 
             if let Ok(json_payload) = serde_json::to_string(&event) {
-                send_event(&producer, "usage-logs", payload.user_id.to_string(), json_payload).await;
+                send_event(&producer, "usage-logs", payload.user_id, json_payload).await;
             }
         });
 
