@@ -7,6 +7,9 @@ use moka::future::Cache;
 use serde::Deserialize;
 use tower::layer::util::Stack;
 use tracing_subscriber::{EnvFilter, fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
+use core::identity_manager::LocalAnchorCache;
+use core::models::LimitAlgorithm;
+use core::quota::check_monthly_quota;
 use core::rules_manager::{get_policy_rules, match_rule};
 use std::{env, time::Duration};
 use std::net::SocketAddr;   
@@ -42,10 +45,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
 
     let local_cache: LocalCache = Cache::builder().time_to_live(Duration::from_secs(30)).max_capacity(10_000).build();
 
+    let local_anchor_cache: LocalAnchorCache = Cache::builder().time_to_live(Duration::from_secs(30)).max_capacity(10_000).build();
 
-    let state = AppState::new(db_pool, redis_pool, kafka_producer, local_cache);
+    let state = AppState::new(db_pool, redis_pool, kafka_producer, local_cache, local_anchor_cache);
 
-    let app = Router::new().route("/", get(health_check)).with_state(state.clone()).route("/check", post(handle_check_rate_limiter)).with_state(state.clone());
+    let app = Router::new().route("/", get(health_check)).with_state(state.clone()).route("/check", post(handle_check_request)).with_state(state.clone());
 
     let addr = SocketAddr::from(([0,0,0,0],3000));
     tracing::info!("Listening on http://{}", addr);
@@ -82,14 +86,14 @@ async fn health_check(State(state): State<AppState>) ->Result<String, StatusCode
 
 #[derive(Deserialize)]
 struct CheckRequest {
-    user_id: String,
+    user_id: Uuid,
     policy_id: Uuid,
     org_id: Uuid,
     request_path: String
 }
 
 // TODO: Complete Implementation
-async fn handle_check_rate_limiter(State(state): State<AppState>, Json(payload): Json<CheckRequest>) -> Result<Json<serde_json::Value>, StatusCode>{
+async fn handle_check_request(State(state): State<AppState>, Json(payload): Json<CheckRequest>) -> Result<Json<serde_json::Value>, StatusCode>{
    
 
     let rules = get_policy_rules(&state.db, &state.redis, &state.local_cache, payload.policy_id).await.map_err(|error| {
@@ -114,40 +118,56 @@ async fn handle_check_rate_limiter(State(state): State<AppState>, Json(payload):
             StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let key = format!("limiter:{}:{}:{}", payload.org_id, rule.id, payload.user_id);
+ 
 
-    let result = check_rate_limit(&mut conn, &key, rule.limit_amount, rule.period_seconds, rule.cost_per_request).await.map_err(|e| {
+    let result = if rule.algorithm == LimitAlgorithm::TokenBucket{
+        let key = format!("limiter:{}:{}:{}", payload.org_id, rule.id, payload.user_id);
+        check_rate_limit(&mut conn, &key, rule.limit_amount, rule.period_seconds, rule.cost_per_request).await.map_err(|e| {
         tracing::error!("Limit error: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+        })?
+    } else {
+        check_monthly_quota(&mut conn, &state.db , &state.local_anchor_cache , payload.org_id,payload.policy_id,rule.id,rule.limit_amount, rule.cost_per_request, payload.user_id).await.map_err(|e| {
+        tracing::error!("Limit error: {:?}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    };
+    
+
 
     let producer = state.kafka.clone();
         tokio::spawn(async move {
             let event = UsageEvent {
                 event_id: Uuid::new_v4(),
-                org_id: None,
-                rule_id:None,
+                org_id: payload.org_id,
+                rule_id: rule.id,
+                policy_id: payload.policy_id,
                 cost: rule.cost_per_request,
-                user_id: payload.user_id.clone(),
+                identity_id: payload.user_id,
                 timestamp: Utc::now(),
                 status: if result.allowed {"ALLOWED".to_string()} else {"DENIED".to_string()}
             };
 
             if let Ok(json_payload) = serde_json::to_string(&event) {
-                send_event(&producer, "usage-logs", payload.user_id.clone(), json_payload).await;
+                send_event(&producer, "usage-logs", payload.user_id.to_string(), json_payload).await;
             }
         });
 
     if result.allowed {
         Ok(Json(serde_json::json!({
-            "status": "ALLOW",
-            "remaining": result.remaining_tokens
+            "status": true,
+            "limit": result.limit,
+            "used": result.used,
+            "remaining": result.remaining
         })))
     }else{
          Ok(Json(serde_json::json!({
-            "status": "DENY",
-            "remaining": result.remaining_tokens,
+            "status": false,
+            "remaining": result.remaining,
             "message" : "Rate limit exceded"
         })))
     } 
 }
+
+
+

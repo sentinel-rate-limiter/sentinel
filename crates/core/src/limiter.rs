@@ -2,6 +2,8 @@ use deadpool_redis::redis::{cmd,Script};
 use deadpool_redis::Connection; 
 use std::time::{SystemTime,UNIX_EPOCH};
 
+use crate::models::AccessDecision;
+
 
 const TOKEN_BUCKET_SCRIPT: &str = r#"
 local key = KEYS[1]
@@ -49,20 +51,13 @@ return { allowed, current_tokens }
 "#;
 
 
-#[derive(Debug)]
-pub struct RateLimitTokens{
-  pub allowed: bool,
-  pub remaining_tokens: f64
-}
-
-
 pub async fn check_rate_limit(
   conn: &mut Connection,
   key: &str,
-  limit: i32,
+  limit: i64,
   period_seconds: i32,
   cost: i32
-) -> Result<RateLimitTokens,String>{
+) -> Result<AccessDecision,String>{
   // Get current time in seconds
   let now = SystemTime::now()
       .duration_since(UNIX_EPOCH)
@@ -76,6 +71,6 @@ pub async fn check_rate_limit(
 
   let result: (i32, f64) = script.key(key).arg(limit).arg(period_seconds).arg(cost).arg(now).invoke_async(conn).await.map_err(|e| format!("Redis Error: {e:?}"))?;
 
-  Ok(RateLimitTokens { allowed: result.0 == 1, remaining_tokens: result.1 })
+  Ok(AccessDecision { allowed: result.0 == 1, remaining: result.1 as i64, limit:limit, used: limit - result.1 as i64 })
  
 }

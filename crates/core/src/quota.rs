@@ -1,6 +1,7 @@
-use crate::{cache::RedisPool, time_utils::get_current_cycle_start};
+use crate::{cache::RedisPool, identity_manager::{LocalAnchorCache, get_billing_anchor}, models::AccessDecision, time_utils::get_current_cycle_start};
 use redis::Script;
 use sqlx::PgPool;
+use tracing_subscriber::fmt::format;
 use uuid::Uuid;
 use chrono::{DateTime, Datelike, Utc};
 use deadpool_redis::{Connection, redis::AsyncCommands};
@@ -42,21 +43,16 @@ redis.call("EXPIRE", key, ttl)
 return new_val
 "#;
 
-pub struct QuotaResult {
-  pub allowed: bool,
-  pub limit: i64,
-  pub used: i64,
-  pub remaining: i64
-}
 
 
+// TODO: 
 pub async fn check_organization_monthly_quota(
   redis: &RedisPool,
   db: &PgPool, 
   org_id: Uuid,
   quota_limit: i64,
   cost: i64
-) -> Result<QuotaResult, String> {
+) -> Result<AccessDecision, String> {
   let now = Utc::now();
   let key = format!("quota:{}-{}-{}", org_id, now.year(), now.month());
   Err("a".to_string())
@@ -66,22 +62,36 @@ pub async fn check_organization_monthly_quota(
 pub async fn check_monthly_quota(
   conn: &mut Connection,
   db: &PgPool,
-  key: &str,
+  anchor_cache: &LocalAnchorCache,
+
+  org_id: Uuid,
+  policy_id: Uuid,
+  rule_id: Uuid,
   limit: i64,
-  cost: i64,
-  billing_anchor: DateTime<Utc>
-) -> Result<QuotaResult,String>
+  cost: i32,
+  user_id: Uuid
+) -> Result<AccessDecision,String>
 {
+
+
+  let billing_anchor = get_billing_anchor(db, conn, anchor_cache, user_id, org_id).await?;
+
+
   let now = Utc::now();
+  let cycle_start = get_current_cycle_start(billing_anchor, now);
+  let date_part = cycle_start.format("%Y-%m-%d").to_string();
+
+  let key = format!("quota:{}:{}:{}:{}:{}", org_id, user_id, policy_id, rule_id, date_part);
+
   let ttl = 60 * 60 * 24 * 31;
-  // key quota: {org-id}-{user-id}-{policy-id}-{rule-id}
+
   let script = Script::new(FIXED_WINDOW_SCRIPT);
 
-  let result : i64 = script.key(key).arg(limit).arg(cost).arg(ttl).invoke_async(conn).await.map_err(|e| format!("Redis Error: {e:?}"))?;
+  let result : i64 = script.key(&key).arg(limit).arg(cost).arg(ttl).invoke_async(conn).await.map_err(|e| format!("Redis Error: {e:?}"))?;
 
   match result { 
-    -2 => return Ok(QuotaResult { allowed: false, limit: limit, used: limit, remaining: 0 }),
-    val if val >= 0 => return Ok(QuotaResult { allowed: true, limit: limit, used: val, remaining: limit - val }),
+    -2 => return Ok(AccessDecision { allowed: false, limit: limit, used: limit, remaining: 0 }),
+    val if val >= 0 => return Ok(AccessDecision { allowed: true, limit: limit, used: val, remaining: limit - val }),
     _ => {}
   }
 
@@ -89,7 +99,7 @@ pub async fn check_monthly_quota(
 
   let row = sqlx::query!(
         r#"
-        SELECT SUM(total_cost) as "total!"
+        SELECT COALESCE(SUM(total_cost), 0)::BIGINT as "total!"
         FROM usage_metrics
         WHERE org_id = $1 
           AND identity_id = $2 
@@ -97,21 +107,21 @@ pub async fn check_monthly_quota(
           AND time_bucket >= $4
         "#,
         org_id,
-        user_id,
+        user_id, 
         rule_id,
         cycle_start
     ).fetch_one(db).await.map_err(|error| format!("Error fetching DB quota: {}", error))?;
 
-    let db_usage = row.total.unwrap_or(0);
+    let db_usage = row.total;
 
-    if db_usage >= limit || (db_usage + cost) > limit {
-        let _ : () = conn.set_ex(key, db_usage, ttl).await.map_err(|error| format!("Error writing quota into redis: {}", error))?;
-        return Ok(QuotaResult { allowed: false, limit: limit, used: limit, remaining: 0 });
+    if db_usage >= limit || (db_usage + cost as i64) > limit {
+        let _ : () = conn.set_ex(&key, db_usage, ttl).await.map_err(|error| format!("Error writing quota into redis: {}", error))?;
+        return Ok(AccessDecision { allowed: false, limit: limit, used: limit, remaining: 0 });
     }
 
-    let new_value = db_usage + cost;
-    let _ : () = conn.set_ex(key, new_value, ttl ).await.map_err(|error| format!("Error writing quota into redis: {}", error))?;
+    let new_value = db_usage + cost as i64;
+    let _ : () = conn.set_ex(&key, new_value, ttl ).await.map_err(|error| format!("Error writing quota into redis: {}", error))?;
     
-    Ok(QuotaResult { allowed: true, limit: limit, used: new_value, remaining: limit - new_value })
+    Ok(AccessDecision { allowed: true, limit: limit, used: new_value, remaining: limit - new_value })
   
 }

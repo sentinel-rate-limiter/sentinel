@@ -5,7 +5,7 @@ use chrono::{DateTime,Utc};
 use sqlx::types::Json;
 // Enums
 
-#[derive(Debug,Clone,Serialize,Deserialize,sqlx::Type)]
+#[derive(Debug,Clone,Serialize,Deserialize,sqlx::Type, PartialEq, Eq)]
 #[sqlx(type_name="limit_algorithm",rename_all="snake_case")]
 pub enum LimitAlgorithm{
   FixedWindow,
@@ -58,7 +58,7 @@ pub struct Rule {
     pub match_condition: Option<Json<serde_json::Value>>, 
     
     pub priority: i32,
-    pub limit_amount: i32,
+    pub limit_amount: i64,
     pub period_seconds: i32,
     pub cost_per_request: i32,
     pub created_at: DateTime<Utc>,
@@ -87,10 +87,19 @@ pub struct UsageMetric {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageEvent{
   pub event_id: Uuid,
-  pub org_id: Option<Uuid>,
-  pub rule_id: Option<Uuid>,
-  pub user_id: String,
+  pub org_id: Uuid,
+  pub rule_id: Uuid,
+  pub policy_id: Uuid,
+  pub identity_id: Uuid,
   pub cost: i32,
   pub timestamp: DateTime<Utc>,
   pub status: String
+}
+
+#[derive(Debug)]
+pub struct AccessDecision {
+  pub allowed: bool,
+  pub limit: i64,
+  pub used: i64,
+  pub remaining: i64
 }
