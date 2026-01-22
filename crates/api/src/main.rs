@@ -1,6 +1,10 @@
 mod state;
 mod kafka;
-mod auth;
+mod handlers_api_keys;
+mod api_key_gen;
+mod api_keys;
+mod security;
+mod handlers_auth;
 
 use axum::{Router, extract::State, http::StatusCode, routing::get, routing::post,Json};
 use dotenvy::dotenv;
@@ -8,16 +12,17 @@ use moka::future::Cache;
 use serde::Deserialize;
 use tower::layer::util::Stack;
 use tracing_subscriber::{EnvFilter, fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
-use core::auth::LocalApiKeyCache;
-use core::identity_manager::LocalAnchorCache;
-use core::models::LimitAlgorithm;
-use core::quota::check_monthly_quota;
-use core::rules_manager::{get_policy_rules, match_rule};
+use common::auth::LocalApiKeyCache;
+use common::identity_manager::LocalAnchorCache;
+use common::models::LimitAlgorithm;
+use common::quota::check_monthly_quota;
+use common::rules_manager::{get_policy_rules, match_rule};
 use std::{env, time::Duration};
 use std::net::SocketAddr;   
-use core::{cache::get_redis_pool, chrono::Utc, database::get_db_connection, deadpool_redis::redis::cmd, limiter::check_rate_limit, models::UsageEvent, rules_manager::LocalCache, sqlx, uuid::Uuid};
+use common::{cache::get_redis_pool, chrono::Utc, database::get_db_connection, deadpool_redis::redis::cmd, limiter::check_rate_limit, models::UsageEvent, rules_manager::LocalCache, sqlx, uuid::Uuid};
 use state::AppState;
 
+use crate::handlers_api_keys::AuthenticatedOrg;
 use crate::kafka::send_event;
 
 
@@ -97,7 +102,7 @@ struct CheckRequest {
 }
 
 // TODO: Complete Implementation
-async fn handle_check_request(State(state): State<AppState>, Json(payload): Json<CheckRequest>) -> Result<Json<serde_json::Value>, StatusCode>{
+async fn handle_check_request(State(state): State<AppState>, Json(payload): Json<CheckRequest>, auth: AuthenticatedOrg) -> Result<Json<serde_json::Value>, StatusCode>{
    
 
     let rules = get_policy_rules(&state.db, &state.redis, &state.local_cache, payload.policy_id).await.map_err(|error| {
@@ -125,7 +130,7 @@ async fn handle_check_request(State(state): State<AppState>, Json(payload): Json
  
 
     let result = if rule.algorithm == LimitAlgorithm::TokenBucket{
-        let key = format!("limiter:{}:{}:{}", payload.org_id, rule.id, &payload.user_id);
+        let key = format!("limiter:{}:{}:{}", auth.org_id, rule.id, &payload.user_id);
         check_rate_limit(&mut conn, &key, rule.limit_amount, rule.period_seconds, rule.cost_per_request).await.map_err(|e| {
         tracing::error!("Limit error: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR

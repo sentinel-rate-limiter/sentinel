@@ -1,9 +1,9 @@
-use core::auth::LocalApiKeyCache;
-use core::identity_manager::LocalAnchorCache;
-use core::sqlx::PgPool;
-use core::cache::RedisPool;
+use common::auth::LocalApiKeyCache;
+use common::identity_manager::LocalAnchorCache;
+use common::sqlx::PgPool;
+use common::cache::RedisPool;
 use crate::kafka::KafkaProducer;
-use core::rules_manager::LocalCache;
+use common::rules_manager::LocalCache;
 
 
 #[derive(Clone)]

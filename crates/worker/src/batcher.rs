@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use chrono::{DateTime, Utc, Timelike};
 use uuid::Uuid;
-use core::models::UsageEvent;
+use common::models::UsageEvent;
 use sqlx::{self, PgPool};
 
 #[derive(Hash, Eq, PartialEq,Debug)]

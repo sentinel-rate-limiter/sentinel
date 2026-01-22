@@ -1,6 +1,6 @@
 mod kafka;
 
-use core::{database::get_db_connection, models::UsageEvent};
+use common::{database::get_db_connection, models::UsageEvent};
 use std::{env, time::Duration};
 
 use dotenvy::dotenv;

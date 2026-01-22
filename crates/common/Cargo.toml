@@ -1,5 +1,5 @@
 [package]
-name = "core"
+name = "common"
 version = "0.1.0"
 edition = "2024"
 
@@ -40,3 +40,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Encryption Api Keys
 sha2 = "0.10"
 hex = "0.4"
+rand = "0.8"

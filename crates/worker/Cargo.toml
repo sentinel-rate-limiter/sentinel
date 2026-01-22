@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 # Own library
-core = {path="../core"}
+common = {path="../common"}
 
 # Async Runtime
 tokio = { version = "1", features = ["full"] }
