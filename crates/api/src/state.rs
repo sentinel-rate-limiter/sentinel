@@ -1,3 +1,4 @@
+use core::auth::LocalApiKeyCache;
 use core::identity_manager::LocalAnchorCache;
 use core::sqlx::PgPool;
 use core::cache::RedisPool;
@@ -11,11 +12,12 @@ pub struct AppState {
   pub redis: RedisPool,
   pub kafka: KafkaProducer,
   pub local_cache: LocalCache,
-  pub local_anchor_cache: LocalAnchorCache
+  pub local_anchor_cache: LocalAnchorCache,
+  pub api_key_cache: LocalApiKeyCache
 }
 
 impl AppState {
-  pub fn new(db:PgPool,redis:RedisPool, kafka: KafkaProducer, local_cache: LocalCache, local_anchor_cache: LocalAnchorCache) -> Self {
-    Self { db, redis, kafka, local_cache, local_anchor_cache }
+  pub fn new(db:PgPool,redis:RedisPool, kafka: KafkaProducer, local_cache: LocalCache, local_anchor_cache: LocalAnchorCache, api_key_cache: LocalApiKeyCache) -> Self {
+    Self { db, redis, kafka, local_cache, local_anchor_cache, api_key_cache }
   }
 }

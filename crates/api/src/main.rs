@@ -8,6 +8,7 @@ use moka::future::Cache;
 use serde::Deserialize;
 use tower::layer::util::Stack;
 use tracing_subscriber::{EnvFilter, fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
+use core::auth::LocalApiKeyCache;
 use core::identity_manager::LocalAnchorCache;
 use core::models::LimitAlgorithm;
 use core::quota::check_monthly_quota;
@@ -48,7 +49,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
 
     let local_anchor_cache: LocalAnchorCache = Cache::builder().time_to_live(Duration::from_secs(30)).max_capacity(10_000).build();
 
-    let state = AppState::new(db_pool, redis_pool, kafka_producer, local_cache, local_anchor_cache);
+    let local_api_key_cache : LocalApiKeyCache = Cache::builder().time_to_live(Duration::from_secs(30)).max_capacity(10_000).build();
+
+    let state = AppState::new(db_pool, redis_pool, kafka_producer, local_cache, local_anchor_cache, local_api_key_cache);
 
     let app = Router::new().route("/", get(health_check)).with_state(state.clone()).route("/check", post(handle_check_request)).with_state(state.clone());
 
