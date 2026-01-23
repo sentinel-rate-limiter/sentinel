@@ -1,7 +1,7 @@
-use common::auth::LocalApiKeyCache;
 use common::identity_manager::LocalAnchorCache;
 use common::sqlx::PgPool;
 use common::cache::RedisPool;
+use crate::api_keys::LocalApiKeyCache;
 use crate::kafka::KafkaProducer;
 use common::rules_manager::LocalCache;
 

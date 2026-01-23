@@ -1,14 +1,11 @@
 use std::env;
 
 use moka::future::Cache;
-use redis::AsyncCommands;
+
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use tracing_subscriber::fmt::format;
-use uuid::Uuid;
+use common::{cache::RedisPool, deadpool_redis::redis::AsyncCommands, uuid::Uuid};
 use rand::{Rng, distributions::Alphanumeric};
-use super::api_key_gen::*;
-use crate::cache::RedisPool;
 
 
 pub type LocalApiKeyCache = Cache<String,Option<Uuid>>;

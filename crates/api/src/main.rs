@@ -1,18 +1,17 @@
 mod state;
 mod kafka;
 mod handlers_api_keys;
-mod api_key_gen;
 mod api_keys;
 mod security;
 mod handlers_auth;
+mod handlers_auth_jwt;
+mod handlers_policies;
 
 use axum::{Router, extract::State, http::StatusCode, routing::get, routing::post,Json};
 use dotenvy::dotenv;
 use moka::future::Cache;
 use serde::Deserialize;
-use tower::layer::util::Stack;
 use tracing_subscriber::{EnvFilter, fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
-use common::auth::LocalApiKeyCache;
 use common::identity_manager::LocalAnchorCache;
 use common::models::LimitAlgorithm;
 use common::quota::check_monthly_quota;
@@ -22,8 +21,10 @@ use std::net::SocketAddr;
 use common::{cache::get_redis_pool, chrono::Utc, database::get_db_connection, deadpool_redis::redis::cmd, limiter::check_rate_limit, models::UsageEvent, rules_manager::LocalCache, sqlx, uuid::Uuid};
 use state::AppState;
 
+use crate::api_keys::LocalApiKeyCache;
 use crate::handlers_api_keys::AuthenticatedOrg;
 use crate::kafka::send_event;
+use handlers_auth::{handle_login,handle_register};
 
 
 
@@ -58,7 +59,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
 
     let state = AppState::new(db_pool, redis_pool, kafka_producer, local_cache, local_anchor_cache, local_api_key_cache);
 
-    let app = Router::new().route("/", get(health_check)).with_state(state.clone()).route("/check", post(handle_check_request)).with_state(state.clone());
+    let auth_routes = Router::new().route("/auth/register", post(handle_register)).route("/auth/login", post(handle_login));
+    let core_routes = Router::new().route("/", get(health_check)).route("/check", post(handle_check_request));
+
+    let app = Router::new().merge(auth_routes).merge(core_routes).with_state(state);
 
     let addr = SocketAddr::from(([0,0,0,0],3000));
     tracing::info!("Listening on http://{}", addr);
@@ -70,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     Ok(())
 }
 
-async fn health_check(State(state): State<AppState>) ->Result<String, StatusCode> {
+async fn health_check(State(state): State<AppState>) -> Result<String, StatusCode> {
     let row: (i32,) = sqlx::query_as("SELECT 1").fetch_one(&state.db).await.map_err(|e| {
         tracing::error!("Database connection failed: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
@@ -102,9 +106,7 @@ struct CheckRequest {
 }
 
 // TODO: Complete Implementation
-async fn handle_check_request(State(state): State<AppState>, Json(payload): Json<CheckRequest>, auth: AuthenticatedOrg) -> Result<Json<serde_json::Value>, StatusCode>{
-   
-
+async fn handle_check_request(auth: AuthenticatedOrg, State(state): State<AppState>, Json(payload): Json<CheckRequest>) -> Result<Json<serde_json::Value>, StatusCode>{
     let rules = get_policy_rules(&state.db, &state.redis, &state.local_cache, payload.policy_id).await.map_err(|error| {
         tracing::debug!("Error while fetching rules: {}",error);
         StatusCode::INTERNAL_SERVER_ERROR

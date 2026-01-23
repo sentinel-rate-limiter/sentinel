@@ -1,8 +1,8 @@
 use axum::{
     Json, async_trait, extract::{FromRef, FromRequestParts, State}, http::{StatusCode, request::Parts}, response::IntoResponse
 };
-use common::{api_keys::rotate_api_key, auth::{delete_api_key, resolve_api_key}, uuid::Uuid};
-
+use crate::api_keys::{resolve_api_key, rotate_api_key};
+use common::uuid::Uuid;
 use serde_json::{self, json};
 
 // TODO: RENAME MODUL CORE -> COMMON
@@ -73,8 +73,8 @@ async fn rotate_api_key_handler(
             })))
       },
       Err(error) => {
-        if error_msg == "Organization not found or invalid old API Key" {
-          tracing::warn!("Failed rotation attempt for org {}: {}", payload.org_id, error_msg);
+        if error == "Organization not found or invalid old API Key" {
+          tracing::warn!("Failed rotation attempt for org {}: {}", payload.org_id, error);
           (StatusCode::UNAUTHORIZED, Json(json!({
             "status": "error",
             "message": "Invalid credentials provided"

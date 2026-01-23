@@ -1,12 +1,15 @@
 use axum::{Json, extract::State, http::StatusCode};
-use common::{chrono::{Duration, Utc}, sqlx, uuid::Uuid};
+use common::{chrono::{Duration, Utc}, uuid::Uuid};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use crate::{self,api_keys::{generate_api_key, hash_api_key}, security::{hash_password, verify_password}, state::AppState};
-use jsonwebtoken::{encode, Header, EncodingKey};
-use chrono::{Utc, Duration};
-use uuid::Uuid;
+use crate::{api_keys::{KeyType,generate_api_key, hash_api_key}, security::{hash_password, verify_password}, state::AppState};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, encode};
+use sqlx;
+use axum_macros::debug_handler;
 
-#[derive(Deserealize)]
+
+
+#[derive(Deserialize)]
 pub struct RegisterRequest {
   pub org_name: String,
   pub name: String,
@@ -15,29 +18,43 @@ pub struct RegisterRequest {
   pub confirm_password: String
 }
 
-#[derive(Deserealize)]
+#[derive(Deserialize)]
 pub struct LoginRequest {
   pub email: String,
   pub password: String,
 }
 
-#[derive(Deserealize)]
+#[derive(Deserialize,Serialize)]
 pub struct AuthResponse {
   pub token: String,
   pub org_id: Uuid,
   pub user_id: Uuid
 }
 
-#[derive(Deserealize,Serialize)]
+#[derive(Debug,Deserialize,Serialize)]
 pub struct Claims {
   pub sub: String,
   pub org_id: String,
   pub role: String,
-  pub exp: usize
+  pub exp: usize,
+  pub iat: usize
 }
 
+pub struct Keys {
+    pub encoding: EncodingKey,
+    pub decoding: DecodingKey,
+}
+pub static KEYS: Lazy<Keys> = Lazy::new(||{
+let secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+let secret_bytes = secret.as_bytes();
+  Keys { 
+    encoding: EncodingKey::from_secret(secret_bytes),
+    decoding: DecodingKey::from_secret(secret_bytes)
+  }
+});
 
-pub async fn register(State(state): State<AppState>, Json(payload): Json<RegisterRequest>) -> Result<Json<AuthResponse, (StatusCode,String)>> {
+#[axum_macros::debug_handler]
+pub async fn handle_register(State(state): State<AppState>, Json(payload): Json<RegisterRequest>) -> Result<Json<AuthResponse>, (StatusCode,String)> {
   
   if payload.password != payload.confirm_password {
     return Err((StatusCode::BAD_REQUEST, format!("Password and confirm password must be equal!")));
@@ -57,7 +74,7 @@ pub async fn register(State(state): State<AppState>, Json(payload): Json<Registe
   let user_id = Uuid::new_v4();
 
     sqlx::query!(
-        "INSERT INTO organization_users (id, org_id, email, password_hash, full_name, role) VALUES ($1, $2, $3, $4, $5, 'admin')",
+        "INSERT INTO organization_user (id, org_id, email, password_hash, name, role) VALUES ($1, $2, $3, $4, $5, 'admin')",
         user_id, org_id, payload.email, password_hash, payload.name
     ).execute(&mut *tx).await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
@@ -68,10 +85,10 @@ pub async fn register(State(state): State<AppState>, Json(payload): Json<Registe
     Ok(Json(AuthResponse { token, org_id, user_id }))
 }
 
-
-pub async fn login( State(state): State<AppState>, Json(payload): Json<LoginRequest>) -> Result<AuthResponse, (StatusCode,String)> {
+#[axum_macros::debug_handler]
+pub async fn handle_login(State(state): State<AppState>, Json(payload): Json<LoginRequest>) -> Result<Json<AuthResponse>, (StatusCode,String)> {
     let user = sqlx::query!(
-        "SELECT id, org_id, password_hash, role FROM organization_users WHERE email = $1",
+        "SELECT id, org_id, password_hash, role FROM organization_user WHERE email = $1",
         payload.email
     )
     .fetch_optional(&state.db)
@@ -85,7 +102,7 @@ pub async fn login( State(state): State<AppState>, Json(payload): Json<LoginRequ
     return Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()));
   }
 
-  let token = generate_jwt(user.id, user.org_id, user.role.unwrap_or("admin"))?;
+  let token = generate_jwt(user.id, user.org_id, &user.role.unwrap_or("admin".to_string()))?;
 
   Ok(Json(AuthResponse {
     token,
@@ -96,16 +113,17 @@ pub async fn login( State(state): State<AppState>, Json(payload): Json<LoginRequ
 
 
 fn generate_jwt(user_id: Uuid, org_id: Uuid, role: &str) -> Result<String, (StatusCode,String)> {
+  let now = Utc::now();
   let expiration = Utc::now().checked_add_signed(Duration::days(7)).expect("Invalid timestamp").timestamp() as usize;
-
+  
   let claims = Claims {
     sub: user_id.to_string(),
     org_id: org_id.to_string(),
     role: role.to_string(),
-    exp: expiration
+    exp: expiration,
+    iat: now.timestamp() as usize
   };
 
-  let secret = std::env::var("JWT_SECRET").expect("Could not find JWT_SECRET variable");
   
-  encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes())).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+  encode(&Header::default(), &claims, &KEYS.encoding).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error while encoding key: {}", error)))
 }
