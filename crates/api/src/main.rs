@@ -6,6 +6,7 @@ mod security;
 mod handlers_auth;
 mod handlers_auth_jwt;
 mod handlers_policies;
+mod handlers_rules;
 
 use axum::{Router, extract::State, http::StatusCode, routing::get, routing::post,Json};
 use dotenvy::dotenv;
