@@ -1,5 +1,6 @@
 use crate::models::{LimitAlgorithm,Rule};
 use crate::cache::RedisPool;
+use deadpool_redis::Connection;
 use sqlx::PgPool;
 use uuid::Uuid;
 use deadpool_redis::redis::AsyncCommands;
@@ -12,7 +13,7 @@ pub type LocalCache = Cache<Uuid,Vec<Rule>>;
 
 pub async fn get_policy_rules(
   db: &PgPool,
-  redis: &RedisPool,
+  redis: &mut Connection,
   local_cache: &LocalCache,
   policy_id: Uuid
 ) -> Result<Vec<Rule>,String> {
@@ -33,14 +34,13 @@ pub async fn get_policy_rules(
 
 pub async fn fetch_from_infra(
   db: &PgPool,
-  redis: &RedisPool,
+  redis: &mut Connection,
   policy_id: Uuid
 ) -> Result<Vec<Rule>, String>{
   let redis_key = format!("policy_rules:{}", policy_id);
-  let mut conn = redis.get().await.map_err(|error| error.to_string())?;
 
 
-  let cached_json: Option<String> = conn.get(&redis_key).await.map_err(|error| error.to_string())?;
+  let cached_json: Option<String> = redis.get(&redis_key).await.map_err(|error| error.to_string())?;
 
   if let Some(json) = cached_json {
     if let Ok(rules) = serde_json::from_str(&json) {
@@ -76,7 +76,7 @@ pub async fn fetch_from_infra(
 
   if !rules.is_empty() {
     let json_val = serde_json::to_string(&rules).unwrap();
-    let _: () = conn.set_ex(&redis_key, json_val, 600).await.map_err(|error| error.to_string())?;
+    let _: () = redis.set_ex(&redis_key, json_val, 600).await.map_err(|error| error.to_string())?;
   }
 
   Ok(rules)

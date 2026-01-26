@@ -1,56 +1,68 @@
-use crate::cache::RedisPool;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use chrono::{DateTime, Utc};
 use moka::future::Cache;
 use deadpool_redis::{Connection, redis::AsyncCommands};
 use uuid::Uuid;
 
-pub type LocalAnchorCache = Cache<String,DateTime<Utc>>;
+use crate::cache::RedisPool;
 
+pub type LocalIdentityCache = Cache<String, IdentityContext>;
 
-pub async fn get_billing_anchor(
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IdentityContext {
+  pub policy_id: Uuid,
+  pub billing_anchor: DateTime<Utc>
+}
+
+pub async fn get_itentity_ctx(
   db: &PgPool,
   redis: &mut Connection,
-  local_cache: &LocalAnchorCache,
-  user_external_id: &String,
+  local_cache: &LocalIdentityCache,
+  user_external_id: &str,
   org_id: Uuid
-) -> Result<DateTime<Utc>, String>{
+) -> Result<IdentityContext, String>{
   
-  if let Some(anchor) = local_cache.get(&user_external_id.to_string()).await {
-    return Ok(anchor);
+  if let Some(ctx) = local_cache.get(user_external_id).await {
+    return Ok(ctx);
   }
 
-  let cache_key = format!("anchor:{}:{}", org_id, user_external_id);
+  let redis_key = format!("identity:{}:{}", org_id, user_external_id);
 
-  let cached_str: Option<String> = redis.get(&cache_key).await.map_err(|e| e.to_string())?;
+  let cached_json: Option<String> = redis.get(&redis_key).await.map_err(|error| format!("Error while reading into redis: {}", error))?;
 
-  if let Some(s) = cached_str {
-    if let Ok(date) = DateTime::parse_from_rfc3339(&s) {
-      let utc_date = date.with_timezone(&Utc);
-      local_cache.insert(user_external_id.to_string(), utc_date).await;
-      return Ok(utc_date)
+  if let Some(json_str) = cached_json {
+    if let Ok(ctx) = serde_json::from_str::<IdentityContext>(&json_str) {
+      local_cache.insert(user_external_id.to_string(), ctx.clone()).await;
+      return Ok(ctx);
     }
   }
 
-  let row = sqlx::query!(
-    r#"SELECT billing_cycle_anchor FROM identities WHERE org_id = $1 AND external_id = $2"#,
+  let record = sqlx::query!(
+        r#"
+        SELECT policy_id, billing_cycle_anchor 
+        FROM identities 
+        WHERE org_id = $1 AND external_id = $2
+        "#,
         org_id,
-        user_external_id.to_string()
+        user_external_id
     )
     .fetch_optional(db)
     .await
-    .map_err(|e| e.to_string())?;
-  
-  let anchor = match row {
-    Some(r) => r.billing_cycle_anchor.unwrap_or(Utc::now()),
-    None => return Err("User identity not found".to_string())
+    .map_err(|error| format!("DB Error: {}", error))?;
+
+  let row = record.ok_or_else(|| format!("Identity not found"))?;
+
+ let ctx = IdentityContext {
+        policy_id: row.policy_id,
+        billing_anchor: row.billing_cycle_anchor.unwrap_or_else(Utc::now),
   };
 
-  let _: () = redis.set_ex(&cache_key, anchor.to_rfc3339(), 60 * 60 * 24)
-        .await
-        .map_err(|e| e.to_string())?;
+  if let Ok(json_val) = serde_json::to_string(&ctx) {
+        let _: () = redis.set_ex(&redis_key, json_val, 60 * 60 * 24).await.unwrap_or(());
+  }
 
-  local_cache.insert(user_external_id.to_string(), anchor).await;
+  local_cache.insert(user_external_id.to_string(), ctx.clone()).await;
 
-  Ok(anchor)
+  Ok(ctx)
 }

@@ -93,6 +93,7 @@ pub async fn resolve_api_key(api_key_cache: LocalApiKeyCache, raw_api_key: &str,
 }
 
 
+// TODO: Instead of rotating with old api keys implement auth with password confirm and rotate key
 pub async fn rotate_api_key(
   api_key_cache: &LocalApiKeyCache, 
   old_raw_api_key: &str, 

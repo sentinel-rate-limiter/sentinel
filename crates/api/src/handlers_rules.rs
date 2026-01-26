@@ -1,7 +1,7 @@
 use axum::{Json, extract::{Path, State}, http::StatusCode};
 use common::{chrono, models::LimitAlgorithm};
 use sqlx::types::Uuid;
-use serde::{Serialize,Deserialize}
+use serde::{Serialize,Deserialize};
 
 use crate::{handlers_auth_jwt::AuthenticatedUser, state::AppState};
 
@@ -97,6 +97,56 @@ pub async fn create_rule(
       created_at: record.created_at
     }))
 }
+
+
+pub async fn get_rule(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path((policy_id, rule_id)): Path<(Uuid, Uuid)> // Asumimos ruta: /policies/:pid/rules/:rid
+) -> Result<Json<RuleResponse>, (StatusCode, String)> {
+
+    let record = sqlx::query!(
+        r#"
+        SELECT 
+            r.id, 
+            r.policy_id, 
+            r.resource_path, 
+            r.priority, 
+            r.limit_amount, 
+            r.period_seconds, 
+            r.cost_per_request, 
+            r.algorithm as "algorithm: LimitAlgorithm", 
+            r.created_at
+        FROM rules r
+        INNER JOIN policies p ON r.policy_id = p.id
+        WHERE r.id = $1 
+          AND r.policy_id = $2 
+          AND p.org_id = $3 
+        "#,
+        rule_id,
+        policy_id,
+        auth.org_id
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error fetching rule: {}", error)))?;
+
+    match record {
+        Some(r) => Ok(Json(RuleResponse {
+            id: r.id,
+            policy_id: r.policy_id,
+            resource_path: r.resource_path,
+            priority: r.priority,
+            limit: r.limit_amount,
+            period: r.period_seconds,
+            cost: r.cost_per_request,
+            algorithm: r.algorithm, 
+            created_at: r.created_at,
+        })),
+        None => Err((StatusCode::NOT_FOUND, "Rule not found".to_string())),
+    }
+}
+
 
 pub async fn list_rules(
     State(state): State<AppState>,

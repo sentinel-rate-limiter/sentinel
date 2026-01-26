@@ -7,13 +7,15 @@ mod handlers_auth;
 mod handlers_auth_jwt;
 mod handlers_policies;
 mod handlers_rules;
+mod handlers_identities;
 
+use axum::routing::{delete, patch};
 use axum::{Router, extract::State, http::StatusCode, routing::get, routing::post,Json};
+use common::identity_manager::{LocalIdentityCache, get_itentity_ctx};
 use dotenvy::dotenv;
 use moka::future::Cache;
 use serde::Deserialize;
 use tracing_subscriber::{EnvFilter, fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
-use common::identity_manager::LocalAnchorCache;
 use common::models::LimitAlgorithm;
 use common::quota::check_monthly_quota;
 use common::rules_manager::{get_policy_rules, match_rule};
@@ -24,6 +26,9 @@ use state::AppState;
 
 use crate::api_keys::LocalApiKeyCache;
 use crate::handlers_api_keys::AuthenticatedOrg;
+use crate::handlers_identities::create_or_update_identity;
+use crate::handlers_policies::{create_policy, delete_policy, get_policy, list_policies, update_policy};
+use crate::handlers_rules::{create_rule, delete_rule, get_rule, list_rules, update_rule};
 use crate::kafka::send_event;
 use handlers_auth::{handle_login,handle_register};
 
@@ -54,16 +59,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
 
     let local_cache: LocalCache = Cache::builder().time_to_live(Duration::from_secs(30)).max_capacity(10_000).build();
 
-    let local_anchor_cache: LocalAnchorCache = Cache::builder().time_to_live(Duration::from_secs(30)).max_capacity(10_000).build();
+    let local_identity_cache: LocalIdentityCache = Cache::builder().time_to_live(Duration::from_secs(30)).max_capacity(10_000).build();
 
     let local_api_key_cache : LocalApiKeyCache = Cache::builder().time_to_live(Duration::from_secs(30)).max_capacity(10_000).build();
 
-    let state = AppState::new(db_pool, redis_pool, kafka_producer, local_cache, local_anchor_cache, local_api_key_cache);
+    let state = AppState::new(db_pool, redis_pool, kafka_producer, local_cache, local_identity_cache, local_api_key_cache);
 
-    let auth_routes = Router::new().route("/auth/register", post(handle_register)).route("/auth/login", post(handle_login));
-    let core_routes = Router::new().route("/", get(health_check)).route("/check", post(handle_check_request));
+    let auth_routes = Router::new()
+        .route("/auth/register", post(handle_register))
+        .route("/auth/login", post(handle_login));
+    
+    let policy_routes = Router::new()
+        .route("/policies", get(list_policies))
+        .route("/policies", post(create_policy))
+        .route("/policies/:policy_id", get(get_policy))
+        .route("/policies/:policy_id", patch(update_policy))
+        .route("/policies/:policy_id", delete(delete_policy));
+    
+    let rules_routes = Router::new()
+        .route("/rules", get(list_rules))
+        .route("/rules", post(create_rule))
+        .route("/rules/:rule_id", get(get_rule))
+        .route("/rules/:rule_id", patch(update_rule))
+        .route("/rules/:rule_id", delete(delete_rule));
 
-    let app = Router::new().merge(auth_routes).merge(core_routes).with_state(state);
+    let identities_routes = Router::new().route("/identities", post(create_or_update_identity));
+    
+
+    let core_routes = Router::new()
+        .route("/", get(health_check))
+        .route("/check", post(handle_check_request));
+
+    let app = Router::new().merge(auth_routes).merge(core_routes).merge(policy_routes).merge(rules_routes).merge(identities_routes).with_state(state);
 
     let addr = SocketAddr::from(([0,0,0,0],3000));
     tracing::info!("Listening on http://{}", addr);
@@ -101,14 +128,25 @@ async fn health_check(State(state): State<AppState>) -> Result<String, StatusCod
 #[derive(Deserialize)]
 struct CheckRequest {
     user_id: String,
-    policy_id: Uuid,
-    org_id: Uuid,
     request_path: String
 }
 
-// TODO: Complete Implementation
 async fn handle_check_request(auth: AuthenticatedOrg, State(state): State<AppState>, Json(payload): Json<CheckRequest>) -> Result<Json<serde_json::Value>, StatusCode>{
-    let rules = get_policy_rules(&state.db, &state.redis, &state.local_cache, payload.policy_id).await.map_err(|error| {
+    
+    let mut conn = state.redis.get().await.map_err(|e| {
+            tracing::error!("Redis connection failed: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let identity_ctx = get_itentity_ctx(&state.db, &mut conn, &state.local_identity_cache, &payload.user_id, auth.org_id).await.map_err(|error| {
+        if error == "Identity not found" {
+           StatusCode::NOT_FOUND
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    })?; 
+    
+    let rules = get_policy_rules(&state.db, &mut conn, &state.local_cache, identity_ctx.policy_id ).await.map_err(|error| {
         tracing::debug!("Error while fetching rules: {}",error);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -125,13 +163,6 @@ async fn handle_check_request(auth: AuthenticatedOrg, State(state): State<AppSta
 
     tracing::debug!("Rule matched: Rule {:?}", rule);
 
-    let mut conn = state.redis.get().await.map_err(|e| {
-            tracing::error!("Redis connection failed: {:?}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
- 
-
     let result = if rule.algorithm == LimitAlgorithm::TokenBucket{
         let key = format!("limiter:{}:{}:{}", auth.org_id, rule.id, &payload.user_id);
         check_rate_limit(&mut conn, &key, rule.limit_amount, rule.period_seconds, rule.cost_per_request).await.map_err(|e| {
@@ -139,7 +170,7 @@ async fn handle_check_request(auth: AuthenticatedOrg, State(state): State<AppSta
         StatusCode::INTERNAL_SERVER_ERROR
         })?
     } else {
-        check_monthly_quota(&mut conn, &state.db , &state.local_anchor_cache , payload.org_id,payload.policy_id,rule.id,rule.limit_amount, rule.cost_per_request, &payload.user_id).await.map_err(|e| {
+        check_monthly_quota(&mut conn, &state.db , &state.local_identity_cache, auth.org_id, rule.id,rule.limit_amount, rule.cost_per_request, &payload.user_id, identity_ctx.policy_id).await.map_err(|e| {
         tracing::error!("Limit error: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
         })?
@@ -151,9 +182,9 @@ async fn handle_check_request(auth: AuthenticatedOrg, State(state): State<AppSta
         tokio::spawn(async move {
             let event = UsageEvent {
                 event_id: Uuid::new_v4(),
-                org_id: payload.org_id,
+                org_id: auth.org_id,
                 rule_id: rule.id,
-                policy_id: payload.policy_id,
+                policy_id: identity_ctx.policy_id,
                 cost: rule.cost_per_request,
                 identity_id: payload.user_id.clone(),
                 timestamp: Utc::now(),

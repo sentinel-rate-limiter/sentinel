@@ -1,9 +1,8 @@
-use crate::{cache::RedisPool, identity_manager::{LocalAnchorCache, get_billing_anchor}, models::AccessDecision, time_utils::get_current_cycle_start};
+use crate::{cache::RedisPool, identity_manager::{LocalIdentityCache, get_itentity_ctx}, models::AccessDecision, time_utils::get_current_cycle_start};
 use redis::Script;
 use sqlx::PgPool;
-use tracing_subscriber::fmt::format;
 use uuid::Uuid;
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{ Datelike, Utc};
 use deadpool_redis::{Connection, redis::AsyncCommands};
 
 
@@ -62,26 +61,25 @@ pub async fn check_organization_monthly_quota(
 pub async fn check_monthly_quota(
   conn: &mut Connection,
   db: &PgPool,
-  anchor_cache: &LocalAnchorCache,
-
+  identity_cache: &LocalIdentityCache,
   org_id: Uuid,
-  policy_id: Uuid,
   rule_id: Uuid,
   limit: i64,
   cost: i32,
-  user_id: &String
+  user_id: &String,
+  policy_id: Uuid
 ) -> Result<AccessDecision,String>
 {
 
 
-  let billing_anchor = get_billing_anchor(db, conn, anchor_cache, &user_id, org_id).await?;
+  let identity_ctx = get_itentity_ctx(db, conn, identity_cache, &user_id, org_id).await?;
 
 
   let now = Utc::now();
-  let cycle_start = get_current_cycle_start(billing_anchor, now);
+  let cycle_start = get_current_cycle_start(identity_ctx.billing_anchor, now);
   let date_part = cycle_start.format("%Y-%m-%d").to_string();
 
-  let key = format!("quota:{}:{}:{}:{}:{}", org_id, &user_id, policy_id, rule_id, date_part);
+  let key = format!("quota:{}:{}:{}:{}:{}", org_id, &user_id, rule_id, date_part, policy_id );
 
   let ttl = 60 * 60 * 24 * 31;
 
@@ -95,7 +93,7 @@ pub async fn check_monthly_quota(
     _ => {}
   }
 
-  let cycle_start = get_current_cycle_start(billing_anchor, now);
+  let cycle_start = get_current_cycle_start(identity_ctx.billing_anchor, now);
 
   let row = sqlx::query!(
         r#"

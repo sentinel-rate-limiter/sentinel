@@ -72,6 +72,37 @@ pub async fn create_policy(State(state): State<AppState>, auth: AuthenticatedUse
     Ok(Json(PolicyResponse { id: record.id, name: record.name, description: record.description, is_default: record.is_default, created_at: record.created_at }))
 }
 
+pub async fn get_policy(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(policy_id): Path<Uuid>
+) -> Result<Json<PolicyResponse>, (StatusCode, String)> {
+    
+    let record = sqlx::query!(
+        r#"
+        SELECT id, name, description, is_default, created_at
+        FROM policies
+        WHERE id = $1 AND org_id = $2
+        "#,
+        policy_id,
+        auth.org_id 
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error fetching policy: {}", error)))?;
+
+    match record {
+        Some(r) => Ok(Json(PolicyResponse {
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            is_default: r.is_default,
+            created_at: r.created_at,
+        })),
+        None => Err((StatusCode::NOT_FOUND, "Policy not found".to_string())),
+    }
+}
+
 
 pub async fn list_policies(
     State(state): State<AppState>,

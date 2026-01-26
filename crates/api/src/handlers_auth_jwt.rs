@@ -36,7 +36,10 @@ impl <S> FromRequestParts<S> for AuthenticatedUser
     let token_data = decode::<Claims>(token, &KEYS.decoding, &Validation::new(Algorithm::HS256))
     .map_err(|error| (StatusCode::UNAUTHORIZED, format!("Invalid token: {}", error)))?;
 
-    Ok(AuthenticatedUser { user_id: token_data.claims.sub, org_id: token_data.claims.org_id })
+    let user_id = token_data.claims.sub.parse::<Uuid>().map_err(|_| (StatusCode::UNAUTHORIZED, format!("Invalid Id user")))?; 
+    let org_id = token_data.claims.org_id.parse::<Uuid>().map_err(|_| (StatusCode::UNAUTHORIZED, format!("Invalid Org Id")))?;
+
+    Ok(AuthenticatedUser { user_id, org_id })
   }
 
 }
