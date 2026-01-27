@@ -1,17 +1,19 @@
 use axum::{
     Json, async_trait, extract::{FromRef, FromRequestParts, State}, http::{StatusCode, request::Parts}, response::IntoResponse
 };
-use crate::api_keys::{resolve_api_key, rotate_api_key};
-use common::uuid::Uuid;
+use serde::{Deserialize, Serialize};
+use crate::api_keys::{get_org_ctx, rotate_api_key};
+use common::{ chrono::{DateTime, Utc}, models::PlanLimits, uuid::Uuid};
 use serde_json::{self, json};
 
-// TODO: RENAME MODUL CORE -> COMMON
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrgContext {
+    pub org_id: Uuid,
+    pub limits: PlanLimits,
+    pub billing_anchor: DateTime<Utc>
+}
 
 use super::AppState;
-
-pub struct AuthenticatedOrg {
-  pub org_id: Uuid,
-}
 
 struct DeleteKeyRequest { 
   api_key: String,
@@ -19,7 +21,7 @@ struct DeleteKeyRequest {
 }
 
 #[async_trait]
-impl<S> FromRequestParts<S> for AuthenticatedOrg 
+impl<S> FromRequestParts<S> for OrgContext 
   where 
     S: Send + Sync, 
     AppState: axum::extract::FromRef<S>,
@@ -34,9 +36,9 @@ impl<S> FromRequestParts<S> for AuthenticatedOrg
           .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid Api Key format".to_string()))?
           .to_string();
       
-      match resolve_api_key(app_state.api_key_cache, &api_key, app_state.db, app_state.redis).await {
-        Ok(Some(org_id)) => {
-          Ok(AuthenticatedOrg { org_id })
+      match get_org_ctx(&app_state.org_cache, &api_key, app_state.db, app_state.redis).await {
+        Ok(Some(ctx)) => {
+          Ok(ctx)
         },
         Ok(None) => {
           Err((StatusCode::UNAUTHORIZED, "Invalid API Key".to_string()))
@@ -57,7 +59,7 @@ async fn rotate_api_key_handler(
   Json(payload): Json<DeleteKeyRequest>) -> impl IntoResponse
   {
     let rotation_result = rotate_api_key(
-        &state.api_key_cache, 
+        &state.org_cache, 
         &payload.api_key, 
         payload.org_id, 
         &state.db, 

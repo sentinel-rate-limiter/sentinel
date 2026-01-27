@@ -5,7 +5,6 @@ use moka::future::Cache;
 use deadpool_redis::{Connection, redis::AsyncCommands};
 use uuid::Uuid;
 
-use crate::cache::RedisPool;
 
 pub type LocalIdentityCache = Cache<String, IdentityContext>;
 

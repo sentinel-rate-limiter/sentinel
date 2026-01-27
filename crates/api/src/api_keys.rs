@@ -4,11 +4,13 @@ use moka::future::Cache;
 
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use common::{cache::RedisPool, deadpool_redis::redis::AsyncCommands, uuid::Uuid};
+use common::{cache::RedisPool, chrono::Local, deadpool_redis::redis::AsyncCommands, models::{PlanLimits}, uuid::Uuid};
 use rand::{Rng, distributions::Alphanumeric};
+use sqlx::types::Json;
 
+use crate::handlers_api_keys::OrgContext;
 
-pub type LocalApiKeyCache = Cache<String,Option<Uuid>>;
+pub type LocalOrgCache = Cache<String,Option<OrgContext>>;
 
 pub enum KeyType { 
   Live,
@@ -40,6 +42,66 @@ pub fn generate_api_key(key_type: KeyType) -> String {
 
 
 
+pub async fn get_org_ctx(org_cache: &LocalOrgCache, raw_api_key: &str, db: PgPool, redis: RedisPool) -> Result<Option<OrgContext>, String> {
+  
+  let key_hash = hash_api_key(raw_api_key);
+
+  if let Some(cached_org) = org_cache.get(&key_hash).await {
+      match cached_org {
+        Some(ctx) => return Ok(Some(ctx)),
+        None => return Ok(None)
+      }
+  }
+
+  let redis_key = format!("org_ctx:{}", key_hash);
+
+  let mut conn = redis.get().await.map_err(|error| format!("Error connecting to redis: {}", error))?;
+
+  let redis_result: Option<String> = conn.get(&redis_key).await.map_err(|error| format!("Error obtaining redis key: {}", error))?;
+  
+  if let Some(ctx_string) = redis_result {
+    if let Ok(ctx) = serde_json::from_str::<OrgContext>(&ctx_string) {
+      org_cache.insert(key_hash, Some(ctx.clone())).await;
+      return Ok(Some(ctx));
+    }
+  }
+
+  let record = sqlx::query!(
+        r#"
+        SELECT o.id as org_id, p.limits as "limits!: Json<PlanLimits>", o.billing_cycle_anchor as billing_cycle_anchor
+        FROM organizations o
+        JOIN plans p ON o.plan_id = p.id
+        WHERE o.api_key_hash = $1 AND o.is_active = true
+        "#,
+        key_hash 
+    )
+    .fetch_optional(&db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+  match record {
+    Some(record) => {
+      let ctx = OrgContext {
+        org_id: record.org_id,
+        limits: record.limits.0,
+        billing_anchor: record.billing_cycle_anchor
+      };
+
+      if let Ok(json_val) = serde_json::to_string(&ctx) {
+          let _ : () = conn.set_ex(&redis_key, json_val, 60*60*24).await.map_err(|error| format!("Error while inserting into redis: {}",error))?;
+      }
+
+      org_cache.insert(key_hash, Some(ctx.clone())).await;
+
+      Ok(Some(ctx))
+    },
+    None => {
+      org_cache.insert(key_hash, None).await;
+      Ok(None)
+    }
+  }
+}
+
 pub fn hash_api_key(raw_api_key: &str) -> String {
   let mut hasher = Sha256::new();
   hasher.update(raw_api_key.as_bytes());
@@ -48,54 +110,11 @@ pub fn hash_api_key(raw_api_key: &str) -> String {
 }
 
 
-pub async fn resolve_api_key(api_key_cache: LocalApiKeyCache, raw_api_key: &str, db: PgPool, redis: RedisPool) -> Result<Option<Uuid>, String> {
-  let key_hash = hash_api_key(raw_api_key);
-
-  if let Some(cached_org) = api_key_cache.get(&key_hash).await {
-      return Ok(cached_org);
-  }
-
-  let redis_key = format!("apikey:{}", key_hash);
-
-  let mut conn = redis.get().await.map_err(|error| format!("Error connecting to redis: {}", error))?;
-
-  let redis_result: Option<String> = conn.get(&redis_key).await.map_err(|error| format!("Error obtaining redis key: {}", error))?;
-  
-  if let Some(org_id_str) = redis_result {
-    let org_uuid = Uuid::parse_str(&org_id_str).map_err(|error| format!("Error parsing Org Id into Uuid: {}", error))?;
-    api_key_cache.insert(key_hash, Some(org_uuid)).await;
-    return Ok(Some(org_uuid));
-  }
-
-  let record = sqlx::query!(
-        "SELECT id FROM organizations WHERE api_key_hash = $1 AND is_active = true",
-        key_hash 
-    )
-    .fetch_optional(&db)
-    .await
-    .map_err(|e| e.to_string())?;
-
-  match record {
-    Some(row) => {
-      let org_id = row.id;
-
-      let _ : () = conn.set_ex(&redis_key, org_id.to_string(), 60*60*24).await.map_err(|error| format!("Error while inserting into redis: {}",error))?;
-
-      api_key_cache.insert(key_hash, Some(org_id)).await;
-
-      Ok(Some(org_id))
-    },
-    None => {
-      api_key_cache.insert(key_hash, None).await;
-      Ok(None)
-    }
-  }
-}
 
 
 // TODO: Instead of rotating with old api keys implement auth with password confirm and rotate key
 pub async fn rotate_api_key(
-  api_key_cache: &LocalApiKeyCache, 
+  org_ctx: &LocalOrgCache, 
   old_raw_api_key: &str, 
   org_id: Uuid,
   db: &PgPool, 
@@ -140,7 +159,7 @@ pub async fn rotate_api_key(
     }
   };
 
-  api_key_cache.invalidate(&old_hash).await;
+  org_ctx.invalidate(&old_hash).await;
 
   Ok(new_raw_key)
 }

@@ -1,7 +1,7 @@
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use common::{chrono::{DateTime, Utc}, deadpool_redis, identity_manager::IdentityContext, uuid::Uuid};
-use crate::{state::AppState, handlers_api_keys::AuthenticatedOrg};
+use crate::{handlers_api_keys::OrgContext, state::AppState};
 
 
 #[derive(Deserialize)]
@@ -19,7 +19,7 @@ pub struct IdentityResponse {
 
 pub async fn create_or_update_identity(
   State(state): State<AppState>, 
-  auth: AuthenticatedOrg, Json(payload): Json<CreateIdentityRequest>) 
+  auth: OrgContext, Json(payload): Json<CreateIdentityRequest>) 
   -> Result<Json<IdentityResponse>, (StatusCode,String)> {
     let policy_check = sqlx::query!(
         "SELECT id FROM policies WHERE id = $1 AND org_id = $2",

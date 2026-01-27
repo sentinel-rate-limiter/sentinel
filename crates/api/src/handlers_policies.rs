@@ -1,7 +1,7 @@
 use axum::{Json, extract::{Path, State}, http::{Response, StatusCode}};
 use serde::{Deserialize, Serialize};
 use common::{chrono, models::LimitAlgorithm, uuid::Uuid};
-use crate::{state::AppState,handlers_auth_jwt::AuthenticatedUser};
+use crate::{handlers_auth_jwt::AuthenticatedUser, plans::get_orgs_limits, state::AppState};
 
 #[derive(Deserialize)]
 pub struct CreatePolicyRequest {
@@ -26,21 +26,33 @@ pub struct UpdatePolicyRequest {
   is_default: Option<bool>
 }
 
-#[derive(Deserialize)]
-pub struct CreateRuleRequest {
-  pub resource_path: String,
-  pub priority: i32,
-  pub limit: i64,
-  pub period: i32,
-  pub cost: i32,
-  pub algorithm: String
-}
 
 pub async fn create_policy(State(state): State<AppState>, auth: AuthenticatedUser, Json(payload): Json<CreatePolicyRequest>) -> Result<Json<PolicyResponse>, (StatusCode,String)> {
-  let new_id = Uuid::new_v4();
 
-  let mut tx = state.db.begin().await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to begin transaction: {}", error)))?;
-  if payload.is_default {
+    let limits = get_orgs_limits(&state.db, auth.org_id).await?;
+
+     let current_count = sqlx::query!(
+        r#"SELECT COUNT(*) as "count!" FROM policies WHERE org_id = $1"#,
+        auth.org_id
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error while counting policies from db: {}", error)))?
+    .count;
+
+    if current_count >= limits.max_policies as i64 {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "Plan limit reached: You have {}/{} policies.", 
+                current_count, limits.max_policies
+            )
+        ));
+    }
+
+    let new_id = Uuid::new_v4();
+    let mut tx = state.db.begin().await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to begin transaction: {}", error)))?;
+    if payload.is_default {
     sqlx::query!(
             r#"
             UPDATE policies 
@@ -52,9 +64,9 @@ pub async fn create_policy(State(state): State<AppState>, auth: AuthenticatedUse
         .execute(&mut *tx) // Usamos la transacción (*tx)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to demote old default: {}", e)))?;
-  }
+    }
 
-  let record = sqlx::query!(
+     let record = sqlx::query!(
         r#"
         INSERT INTO policies (id, org_id, name, description, is_default)
         VALUES ($1, $2, $3, $4, $5)

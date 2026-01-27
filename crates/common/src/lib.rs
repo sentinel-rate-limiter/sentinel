@@ -7,9 +7,9 @@ pub mod quota;
 pub mod time_utils;
 pub mod identity_manager;
 
-
 pub use sqlx;
 pub use chrono;
 pub use uuid;
 pub use deadpool_redis;
+pub use redis;
 

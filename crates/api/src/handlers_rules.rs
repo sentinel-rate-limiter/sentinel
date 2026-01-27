@@ -3,7 +3,7 @@ use common::{chrono, models::LimitAlgorithm};
 use sqlx::types::Uuid;
 use serde::{Serialize,Deserialize};
 
-use crate::{handlers_auth_jwt::AuthenticatedUser, state::AppState};
+use crate::{handlers_auth_jwt::AuthenticatedUser, plans::get_orgs_limits, state::AppState};
 
 
 #[derive(Deserialize)]
@@ -47,6 +47,35 @@ pub async fn create_rule(
   Path(policy_id): Path<Uuid>,
   Json(payload): Json<CreateRuleRequest>
 ) -> Result<Json<RuleResponse>, (StatusCode,String)> {
+
+
+  let limits = get_orgs_limits(&state.db, auth.org_id).await?;
+
+  let current_rules_count = sqlx::query!(
+        r#"
+        SELECT COUNT(r.id) as "count!"
+        FROM rules r
+        JOIN policies p ON r.policy_id = p.id
+        WHERE p.org_id = $1
+        "#,
+        auth.org_id
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error while counting rules from db: {}", error)))?
+    .count;
+
+    if current_rules_count >= limits.max_rules as i64 {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "Plan limit reached: You have {}/{} policies.", 
+                current_rules_count, limits.max_rules
+            )
+        ));
+    }
+
+
   let policy_exists = sqlx::query!(
         "SELECT id FROM policies WHERE id = $1 AND org_id = $2",
         policy_id,

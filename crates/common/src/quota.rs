@@ -43,21 +43,6 @@ return new_val
 "#;
 
 
-
-// TODO: 
-pub async fn check_organization_monthly_quota(
-  redis: &RedisPool,
-  db: &PgPool, 
-  org_id: Uuid,
-  quota_limit: i64,
-  cost: i64
-) -> Result<AccessDecision, String> {
-  let now = Utc::now();
-  let key = format!("quota:{}-{}-{}", org_id, now.year(), now.month());
-  Err("a".to_string())
-}
-
-
 pub async fn check_monthly_quota(
   conn: &mut Connection,
   db: &PgPool,
@@ -71,9 +56,7 @@ pub async fn check_monthly_quota(
 ) -> Result<AccessDecision,String>
 {
 
-
   let identity_ctx = get_itentity_ctx(db, conn, identity_cache, &user_id, org_id).await?;
-
 
   let now = Utc::now();
   let cycle_start = get_current_cycle_start(identity_ctx.billing_anchor, now);
@@ -92,8 +75,6 @@ pub async fn check_monthly_quota(
     val if val >= 0 => return Ok(AccessDecision { allowed: true, limit: limit, used: val, remaining: limit - val }),
     _ => {}
   }
-
-  let cycle_start = get_current_cycle_start(identity_ctx.billing_anchor, now);
 
   let row = sqlx::query!(
         r#"

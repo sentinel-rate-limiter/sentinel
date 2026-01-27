@@ -103,3 +103,21 @@ pub struct AccessDecision {
   pub used: i64,
   pub remaining: i64
 }
+
+
+#[derive(Debug, Serialize, Deserialize,Clone)]
+pub struct PlanLimits {
+  pub max_policies: i32,
+  pub max_rules: i32,
+  pub monthly_quota: i64,
+}
+
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Plan {
+  pub id: Uuid,
+  pub slug: String,
+  pub name: String,
+  pub limits: Json<PlanLimits>
+}
+
