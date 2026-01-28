@@ -4,12 +4,14 @@ mod handlers_api_keys;
 mod api_keys;
 mod security;
 mod handlers_auth;
-mod handlers_auth_jwt;
+mod handlers_auth_token;
 mod handlers_policies;
 mod handlers_rules;
 mod handlers_identities;
 mod plans;
+mod tracing_init;
 
+use axum::http::HeaderName;
 use axum::routing::{delete, patch};
 use axum::{Router, extract::State, http::StatusCode, routing::get, routing::post,Json};
 use common::deadpool_redis::Connection;
@@ -20,7 +22,13 @@ use dotenvy::dotenv;
 use moka::future::Cache;
 use serde::Deserialize;
 use sqlx::PgPool;
-use tracing_subscriber::{EnvFilter, fmt::layer, layer::SubscriberExt, util::SubscriberInitExt};
+use tower::ServiceBuilder;
+use tower_http::{
+    trace::{TraceLayer, DefaultMakeSpan},
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+};
+use tracing::Level;
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use common::models::LimitAlgorithm;
 use common::quota::check_monthly_quota;
 use common::rules_manager::{get_policy_rules, match_rule};
@@ -36,6 +44,7 @@ use crate::handlers_identities::create_or_update_identity;
 use crate::handlers_policies::{create_policy, delete_policy, get_policy, list_policies, update_policy};
 use crate::handlers_rules::{create_rule, delete_rule, get_rule, list_rules, update_rule};
 use crate::kafka::send_event;
+use crate::tracing_init::init_tracing;
 use handlers_auth::{handle_login,handle_register};
 
 
@@ -44,8 +53,8 @@ use handlers_auth::{handle_login,handle_register};
 async fn main() -> Result<(), Box<dyn std::error::Error>>{
 
     dotenv().ok();
-    
-    tracing_subscriber::registry().with(tracing_subscriber::fmt::layer()).with(EnvFilter::from_default_env()).init();
+    init_tracing();
+    let x_request_id = HeaderName::from_static("x-request-id");
 
 
     let database_url = env::var("database_url").expect("Could not find Database URL in the enviroment files...");
@@ -98,7 +107,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
         .route("/", get(health_check))
         .route("/check", post(handle_check_request));
 
-    let app = Router::new().merge(auth_routes).merge(core_routes).merge(policy_routes).merge(rules_routes).merge(identities_routes).with_state(state);
+    let app = Router::new()
+        .merge(auth_routes)
+        .merge(core_routes)
+        .merge(policy_routes)
+        .merge(rules_routes)
+        .merge(identities_routes)
+        .with_state(state)
+        .layer(
+        ServiceBuilder::new()
+            .layer(SetRequestIdLayer::new(
+                x_request_id.clone(),
+                MakeRequestUuid,
+            ))
+            .layer(PropagateRequestIdLayer::x_request_id())
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(
+                        DefaultMakeSpan::new()
+                            .level(Level::INFO)
+                            .include_headers(true) 
+                    )
+                    .on_response(
+                        tower_http::trace::DefaultOnResponse::new()
+                            .level(Level::INFO)
+                            .latency_unit(tower_http::LatencyUnit::Millis)
+                    )
+            )
+    );
 
     let addr = SocketAddr::from(([0,0,0,0],3000));
     tracing::info!("Listening on http://{}", addr);
@@ -349,3 +385,5 @@ pub async fn check_global_quota(
 
     Ok(true)
 }
+
+

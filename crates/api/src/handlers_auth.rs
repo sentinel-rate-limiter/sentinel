@@ -1,16 +1,16 @@
 use std::env;
 
 use axum::{Json, extract::State, http::StatusCode};
-use common::{chrono::{Duration, Utc}, redis, uuid::Uuid};
+use common::{redis, uuid::Uuid};
 use lettre::{Message, SmtpTransport, Transport, transport::smtp::authentication::Credentials};
 use once_cell::sync::Lazy;
 use rand::{Rng, distributions::Alphanumeric};
 use serde::{Deserialize, Serialize};
-use crate::{api_keys::{KeyType,generate_api_key, hash_api_key}, security::{hash_password, verify_password}, state::AppState};
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, encode};
+use crate::{api_keys::{KeyType,generate_api_key, hash_api_key}, handlers_auth_token::SessionData, security::{hash_password, verify_password}, state::AppState};
+use jsonwebtoken::{DecodingKey, EncodingKey};
 use sqlx;
-use axum_macros::debug_handler;
 use serde_json::json;
+use tracing;
 
 
 #[derive(Deserialize)]
@@ -30,9 +30,20 @@ pub struct LoginRequest {
 
 #[derive(Deserialize,Serialize)]
 pub struct AuthResponse {
-  pub token: String,
-  pub org_id: Uuid,
-  pub user_id: Uuid
+    pub token: String,
+    pub user_id: Uuid,
+    pub org_id: Uuid,
+    pub role: String,
+}
+
+#[derive(Deserialize)]
+pub struct VerifyRequest {
+    token: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResendRequest {
+    pub email: String,
 }
 
 #[derive(Debug,Deserialize,Serialize)]
@@ -57,11 +68,21 @@ let secret_bytes = secret.as_bytes();
   }
 });
 
-#[axum_macros::debug_handler]
-pub async fn handle_register(State(state): State<AppState>, Json(payload): Json<RegisterRequest>) -> Result<Json<serde_json::Value>, (StatusCode,String)> {
-  
 
+#[tracing::instrument(
+    name = "register_user", 
+    skip(state, payload),  
+    fields(               
+        org_name = %payload.org_name,
+        email = %payload.email,
+        org_id = tracing::field::Empty, 
+        user_id = tracing::field::Empty
+    ),
+    err(Debug) 
+)]
+pub async fn handle_register(State(state): State<AppState>, Json(payload): Json<RegisterRequest>) -> Result<Json<serde_json::Value>, (StatusCode,String)> {
   if payload.password != payload.confirm_password {
+    tracing::warn!("Registration failed: Password mismatch");
     return Err((StatusCode::BAD_REQUEST, format!("Password and confirm password must be equal!")));
   } 
   let password_hash: String = hash_password(&payload.password).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
@@ -69,6 +90,8 @@ pub async fn handle_register(State(state): State<AppState>, Json(payload): Json<
 
   let mut tx = state.db.begin().await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
   let org_id = Uuid::new_v4();
+  tracing::Span::current().record("org_id", &org_id.to_string());
+
   let raw_api_key = generate_api_key(KeyType::Live);
   let hash_api_key = hash_api_key(&raw_api_key);
   sqlx::query!(
@@ -77,6 +100,7 @@ pub async fn handle_register(State(state): State<AppState>, Json(payload): Json<
   ).execute(&mut *tx).await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
   let user_id = Uuid::new_v4();
+  tracing::Span::current().record("user_id", &user_id.to_string());
 
     sqlx::query!(
         "INSERT INTO organization_user (id, org_id, email, password_hash, name, role, is_verified) VALUES ($1, $2, $3, $4, $5, 'admin', FALSE)",
@@ -84,6 +108,7 @@ pub async fn handle_register(State(state): State<AppState>, Json(payload): Json<
     ).execute(&mut *tx).await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
     tx.commit().await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    tracing::info!("Organization and Admin User persisted in DB");
 
     let mut conn = state.redis.get().await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error connecting to redis: {}", error)))?;
 
@@ -109,6 +134,7 @@ pub async fn handle_register(State(state): State<AppState>, Json(payload): Json<
       }
     });
     
+    tracing::info!("Registration process completed successfully");
     Ok(Json(json!({
         "status": "pending_verification",
         "message": "User registered. Please check your email to verify account.",
@@ -126,79 +152,102 @@ pub async fn handle_login(State(state): State<AppState>, Json(payload): Json<Log
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()))?;
 
-  let valid = verify_password(&user.password_hash, &payload.password).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Hash verify error".to_string()))?;;
+    let valid = verify_password(&user.password_hash, &payload.password).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Hash verify error".to_string()))?;;
   
-  if !valid {
+    if !valid {
     return Err((StatusCode::UNAUTHORIZED, "Invalid credentials".to_string()));
-  }
+    }
 
-  if !user.is_verified.unwrap_or(false) {
-    return Err((StatusCode::FORBIDDEN, "Please verify your email address first.".to_string()));
-  }
+    if !user.is_verified.unwrap_or(false) {
+        return Err((StatusCode::FORBIDDEN, "Please verify your email address first.".to_string()));
+    }
 
-  let token = generate_jwt(user.id, user.org_id, &user.role.unwrap_or("admin".to_string()))?;
+    let session_token = Uuid::new_v4().to_string();
+    let role = user.role.unwrap_or_else(|| "admin".to_string());
+
+    let session_data = SessionData {
+        user_id: user.id,
+        org_id: user.org_id,
+        role: role.clone(),
+        token: session_token.clone()
+    };
+
+    let redis_key = format!("session:{}", session_token);
+    let session_json = serde_json::to_string(&session_data)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Serialization error: {}", error)))?;
+    let ttl_seconds = 86400;
+
+    let mut conn = state.redis.get().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, format!("Redis connection error")))?;
+
+    let _ : () = redis::cmd("SETEX")
+        .arg(&redis_key)
+        .arg(ttl_seconds)
+        .arg(session_json)
+        .query_async(&mut conn)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Redis save error: {}", e)))?;
 
   Ok(Json(AuthResponse {
-    token,
+    token: session_token,
     user_id: user.id,
-    org_id: user.org_id
+    org_id: user.org_id,
+    role
   }))
 }
 
 
-fn generate_jwt(user_id: Uuid, org_id: Uuid, role: &str) -> Result<String, (StatusCode,String)> {
-  let now = Utc::now();
-  let expiration = Utc::now().checked_add_signed(Duration::days(7)).expect("Invalid timestamp").timestamp() as usize;
-  
-  let claims = Claims {
-    sub: user_id.to_string(),
-    org_id: org_id.to_string(),
-    role: role.to_string(),
-    exp: expiration,
-    iat: now.timestamp() as usize
-  };
-
-  
-  encode(&Header::default(), &claims, &KEYS.encoding).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error while encoding key: {}", error)))
-}
-
-
-#[derive(Deserialize)]
-pub struct VerifyRequest {
-    token: String,
-}
-
-#[derive(Deserialize)]
-pub struct ResendRequest {
-    pub email: String,
-}
-
 pub async fn handle_verify_email(State(state): State<AppState>,Json(payload): Json<VerifyRequest>) 
 -> Result<Json<AuthResponse>, (StatusCode, String)> {
-  let mut conn = state.redis.get().await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Redis error".to_string()))?;
-  let redis_key = format!("verify_email:{}", payload.token);
+    let mut conn = state.redis.get().await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Redis error".to_string()))?;
+    let redis_key = format!("verify_email:{}", payload.token);
 
-  let user_id_str: String = redis::cmd("GET")
+    let user_id_str: String = redis::cmd("GET")
         .arg(&redis_key)
         .query_async(&mut conn)
         .await
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid or expired verification token".to_string()))?;
 
-  let user_id = Uuid::parse_str(&user_id_str).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "ID error".to_string()))?;
+    let user_id = Uuid::parse_str(&user_id_str).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "ID error".to_string()))?;
 
-  let user = sqlx::query!(
+    let user = sqlx::query!(
         "UPDATE organization_user SET is_verified = TRUE WHERE id = $1 RETURNING org_id, role",
         user_id
     ).fetch_one(&state.db).await.map_err(|_| (StatusCode::NOT_FOUND, "User not found".to_string()))?;
 
-  let _ : () = redis::cmd("DEL").arg(&redis_key).query_async(&mut conn).await.unwrap_or(());
+    let _ : () = redis::cmd("DEL").arg(&redis_key).query_async(&mut conn).await.unwrap_or(());
 
-  let token = generate_jwt(user_id, user.org_id, &user.role.unwrap_or("admin".to_string())).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error generating token")))?;
 
-  Ok(Json(AuthResponse {
-        token,
+    let session_token = Uuid::new_v4().to_string();
+    let role = user.role.unwrap_or_else(|| "admin".to_string());
+    let session_data = SessionData {
+        user_id,
         org_id: user.org_id,
-        user_id
+        role: role.clone(),
+        token: session_token.clone()
+    };
+
+    let redis_key = format!("session:{}", session_token);
+    let session_json = serde_json::to_string(&session_data)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Serialization error: {}", error)))?;
+    let ttl_seconds = 86400;
+
+    let mut conn = state.redis.get().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, format!("Redis connection error")))?;
+
+    let _ : () = redis::cmd("SETEX")
+        .arg(&redis_key)
+        .arg(ttl_seconds)
+        .arg(session_json)
+        .query_async(&mut conn)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Redis save error: {}", e)))?;
+
+    Ok(Json(AuthResponse {
+        token: session_token,
+        org_id: user.org_id,
+        user_id,
+        role
     }))
 }
 
@@ -250,6 +299,19 @@ pub async fn handle_resend_verification(
         "status": "success",
         "message": "Verification email resent."
     })))
+}
+
+async fn handle_logout(State(state): State<AppState>,  auth: SessionData) -> Result<StatusCode, (StatusCode,String)> {
+    let mut conn = state.redis.get().await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Redis error".to_string()))?;
+    let redis_key = format!("session:{}", auth.token);
+
+    let _: () = redis::cmd("DEL")
+        .arg(&redis_key)
+        .query_async(&mut conn)
+        .await
+        .unwrap_or(());
+
+    Ok(StatusCode::OK)
 }
 
 // TODO: CONVERT INTO NON BLOCKING FUNCTION WITH TOKIO1 + lettre

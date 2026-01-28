@@ -3,7 +3,7 @@ use common::{chrono, models::LimitAlgorithm};
 use sqlx::types::Uuid;
 use serde::{Serialize,Deserialize};
 
-use crate::{handlers_auth_jwt::AuthenticatedUser, plans::get_orgs_limits, state::AppState};
+use crate::{handlers_auth_token::SessionData, plans::get_orgs_limits, state::AppState};
 
 
 #[derive(Deserialize)]
@@ -43,7 +43,7 @@ pub struct UpdateRuleRequest {
 
 pub async fn create_rule(
   State(state): State<AppState>,
-  auth: AuthenticatedUser,
+  auth: SessionData,
   Path(policy_id): Path<Uuid>,
   Json(payload): Json<CreateRuleRequest>
 ) -> Result<Json<RuleResponse>, (StatusCode,String)> {
@@ -130,7 +130,7 @@ pub async fn create_rule(
 
 pub async fn get_rule(
     State(state): State<AppState>,
-    auth: AuthenticatedUser,
+    auth: SessionData,
     Path((policy_id, rule_id)): Path<(Uuid, Uuid)> // Asumimos ruta: /policies/:pid/rules/:rid
 ) -> Result<Json<RuleResponse>, (StatusCode, String)> {
 
@@ -179,7 +179,7 @@ pub async fn get_rule(
 
 pub async fn list_rules(
     State(state): State<AppState>,
-    auth: AuthenticatedUser,
+    auth: SessionData,
     Path(policy_id): Path<Uuid>
 ) -> Result<Json<Vec<RuleResponse>>, (StatusCode, String)> {
 
@@ -229,7 +229,7 @@ pub async fn list_rules(
 
 pub async fn update_rule(
     State(state): State<AppState>,
-    auth: AuthenticatedUser,
+    auth: SessionData,
     Path((policy_id, rule_id)): Path<(Uuid, Uuid)>, // Nested paths: /policies/:pid/rules/:rid
     Json(payload): Json<UpdateRuleRequest>
 ) -> Result<Json<RuleResponse>, (StatusCode, String)> {
@@ -297,7 +297,7 @@ pub async fn update_rule(
 
 pub async fn delete_rule(
     State(state): State<AppState>,
-    auth: AuthenticatedUser,
+    auth: SessionData,
     Path((policy_id, rule_id)): Path<(Uuid, Uuid)>
 ) -> Result<(StatusCode, String), (StatusCode, String)> {
 

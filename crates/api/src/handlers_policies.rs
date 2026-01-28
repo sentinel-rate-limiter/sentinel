@@ -1,7 +1,7 @@
 use axum::{Json, extract::{Path, State}, http::{Response, StatusCode}};
 use serde::{Deserialize, Serialize};
 use common::{chrono, models::LimitAlgorithm, uuid::Uuid};
-use crate::{handlers_auth_jwt::AuthenticatedUser, plans::get_orgs_limits, state::AppState};
+use crate::{ handlers_auth_token::SessionData, plans::get_orgs_limits, state::AppState};
 
 #[derive(Deserialize)]
 pub struct CreatePolicyRequest {
@@ -27,7 +27,7 @@ pub struct UpdatePolicyRequest {
 }
 
 
-pub async fn create_policy(State(state): State<AppState>, auth: AuthenticatedUser, Json(payload): Json<CreatePolicyRequest>) -> Result<Json<PolicyResponse>, (StatusCode,String)> {
+pub async fn create_policy(State(state): State<AppState>, auth: SessionData, Json(payload): Json<CreatePolicyRequest>) -> Result<Json<PolicyResponse>, (StatusCode,String)> {
 
     let limits = get_orgs_limits(&state.db, auth.org_id).await?;
 
@@ -86,7 +86,7 @@ pub async fn create_policy(State(state): State<AppState>, auth: AuthenticatedUse
 
 pub async fn get_policy(
     State(state): State<AppState>,
-    auth: AuthenticatedUser,
+    auth: SessionData,
     Path(policy_id): Path<Uuid>
 ) -> Result<Json<PolicyResponse>, (StatusCode, String)> {
     
@@ -118,7 +118,7 @@ pub async fn get_policy(
 
 pub async fn list_policies(
     State(state): State<AppState>,
-    auth: AuthenticatedUser
+    auth: SessionData
 ) -> Result<Json<Vec<PolicyResponse>>, (StatusCode,String)> {
     let rows = sqlx::query!(
         r#"
@@ -145,7 +145,7 @@ pub async fn list_policies(
 }
 
 
-pub async fn update_policy(State(state): State<AppState>, auth: AuthenticatedUser, Path(policy_id): Path<Uuid>,Json(payload): Json<UpdatePolicyRequest>) -> Result<Json<PolicyResponse>, (StatusCode, String)> {
+pub async fn update_policy(State(state): State<AppState>, auth: SessionData, Path(policy_id): Path<Uuid>,Json(payload): Json<UpdatePolicyRequest>) -> Result<Json<PolicyResponse>, (StatusCode, String)> {
 
     let mut tx = state.db.begin().await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to begin transaction: {}", error)))?;
 
@@ -200,7 +200,7 @@ pub async fn update_policy(State(state): State<AppState>, auth: AuthenticatedUse
 
 }
 
-pub async fn delete_policy(State(state): State<AppState>, auth: AuthenticatedUser, Path(policy_id): Path<Uuid>) -> 
+pub async fn delete_policy(State(state): State<AppState>, auth: SessionData, Path(policy_id): Path<Uuid>) -> 
 Result<(StatusCode,String),(StatusCode,String)>{
     let result = sqlx::query!(
         "DELETE FROM policies WHERE id = $1 AND org_id = $2",

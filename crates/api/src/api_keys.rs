@@ -112,16 +112,23 @@ pub fn hash_api_key(raw_api_key: &str) -> String {
 
 
 
-// TODO: Instead of rotating with old api keys implement auth with password confirm and rotate key
 pub async fn rotate_api_key(
   org_ctx: &LocalOrgCache, 
-  old_raw_api_key: &str, 
   org_id: Uuid,
   db: &PgPool, 
   redis: &RedisPool) -> Result<String, String> {
     
 
-  let old_hash = hash_api_key(old_raw_api_key);
+  let current_org = sqlx::query!(
+        "SELECT api_key_hash FROM organizations WHERE id = $1",
+        org_id
+    )
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("Organization not found".to_string())?;
+
+  let old_hash = current_org.api_key_hash;
 
   let new_raw_key = generate_api_key(KeyType::Live);
 
@@ -131,11 +138,10 @@ pub async fn rotate_api_key(
         r#"
         UPDATE organizations 
         SET api_key_hash = $1, updated_at = NOW()
-        WHERE id = $2 AND api_key_hash = $3
+        WHERE id = $2 
         "#,
         &new_hash,
         &org_id,
-        &old_hash 
     )
     .execute(db)
     .await
