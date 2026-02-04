@@ -1,6 +1,6 @@
 use axum::{Json, extract::{Path, State}, http::{Response, StatusCode}};
 use serde::{Deserialize, Serialize};
-use common::{chrono, models::LimitAlgorithm, uuid::Uuid};
+use common::{chrono, models::LimitAlgorithm, redis, uuid::Uuid};
 use crate::{ handlers_auth_token::SessionData, plans::get_orgs_limits, state::AppState};
 
 #[derive(Deserialize)]
@@ -216,4 +216,24 @@ Result<(StatusCode,String),(StatusCode,String)>{
     }
 
     Ok((StatusCode::NO_CONTENT, format!("Sucessfully deleted policy")))
+}
+
+
+
+pub async fn invalidate_policy_cache(state: &AppState, policy_id: Uuid) {
+    let redis_key = format!("policy_rules:{}", policy_id);
+
+    match state.redis.get().await {
+        Ok(mut conn) => {
+            if let Err(e) = redis::cmd("DEL").arg(&redis_key).query_async::<_, ()>(&mut conn).await {
+                tracing::error!("Failed to invalidate Redis cache for policy {}: {}", policy_id, e);
+            } else {
+                tracing::debug!("Invalidated Redis cache for policy {}", policy_id);
+            }
+        },
+        Err(e) => tracing::error!("Failed to get Redis connection for invalidation: {}", e),
+    }
+
+    state.local_cache.remove(&policy_id).await; 
+    tracing::debug!("Invalidated Local cache for policy {}", policy_id);
 }

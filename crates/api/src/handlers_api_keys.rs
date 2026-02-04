@@ -14,7 +14,7 @@ pub struct OrgContext {
 }
 
 use super::AppState;
-
+#[derive(Serialize, Deserialize)]
 pub struct DeleteKeyRequest { 
   pub password: String,
 }
@@ -52,11 +52,12 @@ impl<S> FromRequestParts<S> for OrgContext
   }
 }
 
-#[tracing::instrument(
-    name = "handler_rotate_key",
-    skip(state, payload), 
-    fields(org_id = %auth.org_id) 
-)]
+// #[tracing::instrument(
+//     name = "handler_rotate_key",
+//     skip(state, payload), 
+//     fields(org_id = %auth.org_id) 
+// )]
+#[axum::debug_handler]
 pub async fn rotate_api_key_handler(
   State(state): State<AppState>, 
   auth: SessionData,
@@ -73,7 +74,7 @@ pub async fn rotate_api_key_handler(
     .ok_or((StatusCode::UNAUTHORIZED, "User not found".to_string()))?;
 
 
-    let is_valid = verify_password(&payload.password, &user.password_hash)
+    let is_valid = verify_password(&user.password_hash,&payload.password)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Password verification failed".to_string()))?;
 
     if !is_valid {
@@ -109,3 +110,5 @@ pub async fn rotate_api_key_handler(
       }
     }
 }
+
+

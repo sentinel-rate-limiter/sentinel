@@ -128,10 +128,9 @@ pub async fn rotate_api_key(
     .map_err(|e| e.to_string())?
     .ok_or("Organization not found".to_string())?;
 
-  let old_hash = current_org.api_key_hash;
+  let old_hash_opt = current_org.api_key_hash;
 
   let new_raw_key = generate_api_key(KeyType::Live);
-
   let new_hash = hash_api_key(&new_raw_key); 
 
   let rows_affected = sqlx::query!(
@@ -152,21 +151,23 @@ pub async fn rotate_api_key(
     return Err("Organization not found or invalid old API Key".to_string());
   }
 
-  let redis_key = format!("apikey:{}", old_hash);
-
-  match redis.get().await {
-    Ok(mut conn) => {
-      let result: Result<(), _> = conn.del(&redis_key).await;
-      if let Err(error) = result {
-        tracing::error!("Failed to delete key from Redis (Consistency Risk): {}", error);
+  if let Some(old_hash) = old_hash_opt {
+    let redis_key = format!("org_ctx:{}", old_hash);
+    match redis.get().await {
+      Ok(mut conn) => {
+        let result: Result<(), _> = conn.del(&redis_key).await;
+        if let Err(error) = result {
+          tracing::error!("Failed to delete key from Redis (Consistency Risk): {}", error);
+        }
+      }, Err(error) => {
+        tracing::error!("Failed to connect to Redis during rotation: {}", error);
       }
-    }, Err(error) => {
-      tracing::error!("Failed to connect to Redis during rotation: {}", error);
-    }
-  };
-
-  org_ctx.invalidate(&old_hash).await;
-
+    };
+    org_ctx.invalidate(&old_hash).await;
+    tracing::info!("Old API Key invalidated for Org {}", org_id);
+  } else {
+    tracing::info!("New API Key generated for Org {} (First time generation)", org_id);
+  }
   Ok(new_raw_key)
 }
 

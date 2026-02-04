@@ -3,11 +3,12 @@ use common::{chrono, models::LimitAlgorithm};
 use sqlx::types::Uuid;
 use serde::{Serialize,Deserialize};
 
-use crate::{handlers_auth_token::SessionData, plans::get_orgs_limits, state::AppState};
+use crate::{handlers_auth_token::SessionData, handlers_policies::invalidate_policy_cache, plans::get_orgs_limits, state::AppState};
 
 
 #[derive(Deserialize)]
 pub struct CreateRuleRequest {
+  pub policy_id: Uuid,
   pub resource_path: String,
   pub priority: i32,
   pub limit: i64,
@@ -44,7 +45,6 @@ pub struct UpdateRuleRequest {
 pub async fn create_rule(
   State(state): State<AppState>,
   auth: SessionData,
-  Path(policy_id): Path<Uuid>,
   Json(payload): Json<CreateRuleRequest>
 ) -> Result<Json<RuleResponse>, (StatusCode,String)> {
 
@@ -78,7 +78,7 @@ pub async fn create_rule(
 
   let policy_exists = sqlx::query!(
         "SELECT id FROM policies WHERE id = $1 AND org_id = $2",
-        policy_id,
+        payload.policy_id,
         auth.org_id
     ).fetch_optional(&state.db)
     .await
@@ -103,7 +103,7 @@ pub async fn create_rule(
         RETURNING created_at, algorithm as "algorithm: LimitAlgorithm"
         "#,
         rule_id,
-        policy_id,
+        payload.policy_id,
         payload.resource_path,
         payload.priority,
         payload.limit,
@@ -114,9 +114,11 @@ pub async fn create_rule(
     .fetch_one(&state.db)
     .await.map_err(|error |(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to insert rule into db: {}", error)))?;
   
+    invalidate_policy_cache(&state, payload.policy_id).await;
+
     Ok(Json(RuleResponse {
       id: rule_id,
-      policy_id,
+      policy_id: payload.policy_id,
       resource_path: payload.resource_path,
       limit: payload.limit,
       priority: payload.priority,
@@ -276,8 +278,12 @@ pub async fn update_rule(
     .await
     .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Update failed in db: {}", error)))?; 
 
+    
   match record {
     Some(r) => {
+      
+      invalidate_policy_cache(&state, policy_id).await;
+
       Ok(Json(RuleResponse {
           id: r.id,
           policy_id,
@@ -319,6 +325,9 @@ pub async fn delete_rule(
     if result.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, format!("No rule found within the organization")))
     }
+
+    invalidate_policy_cache(&state, policy_id).await;
+
 
     Ok((StatusCode::NO_CONTENT, format!("Successfully deleted rule")))
 }

@@ -41,7 +41,12 @@ impl <S> FromRequestParts<S> for SessionData
       return Err((StatusCode::UNAUTHORIZED, "Invalid token format".into()));
     }
     
-    let token = auth_header.strip_prefix("Bearer ").unwrap_or("");
+    let token = if let Some(stripped) = auth_header.strip_prefix("Bearer ") {
+        stripped.trim() 
+    } else {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid token format".to_string()));
+    };
+    
     let redis_key = format!("session:{}", token);
 
     let mut conn = app_state.redis.get().await

@@ -38,7 +38,7 @@ use common::{cache::get_redis_pool, chrono::Utc, database::get_db_connection, de
 use state::AppState;
 
 use crate::api_keys::{LocalOrgCache, get_org_ctx};
-use crate::handlers_api_keys::OrgContext;
+use crate::handlers_api_keys::{OrgContext, rotate_api_key_handler};
 use crate::handlers_auth::{handle_resend_verification, handle_verify_email};
 use crate::handlers_identities::create_or_update_identity;
 use crate::handlers_policies::{create_policy, delete_policy, get_policy, list_policies, update_policy};
@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
     let auth_routes = Router::new()
         .route("/auth/register", post(handle_register))
         .route("/auth/login", post(handle_login))
-        .route("/auth/verify", post(handle_verify_email))
+        .route("/auth/verify/:token_verification", post(handle_verify_email))
         .route("/auth/resend-verification", post(handle_resend_verification));
     
     let policy_routes = Router::new()
@@ -94,11 +94,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
         .route("/policies/:policy_id", delete(delete_policy));
     
     let rules_routes = Router::new()
-        .route("/rules", get(list_rules))
-        .route("/rules", post(create_rule))
-        .route("/rules/:rule_id", get(get_rule))
-        .route("/rules/:rule_id", patch(update_rule))
-        .route("/rules/:rule_id", delete(delete_rule));
+        .route("/rules/:policy_id", get(list_rules))
+        .route("/rules/", post(create_rule))
+        .route("/rules/:policy_id/:rule_id", get(get_rule))
+        .route("/rules/:policy_id/:rule_id", patch(update_rule))
+        .route("/rules/:policy_id/:rule_id", delete(delete_rule));
+
+    let api_key_routes = Router::new().route("/api-key", post(rotate_api_key_handler));
 
     let identities_routes = Router::new().route("/identities", post(create_or_update_identity));
     
@@ -113,6 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>{
         .merge(policy_routes)
         .merge(rules_routes)
         .merge(identities_routes)
+        .merge(api_key_routes)
         .with_state(state)
         .layer(
         ServiceBuilder::new()

@@ -1,6 +1,6 @@
 use std::env;
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, extract::{Path, State, path}, http::StatusCode};
 use common::{redis, uuid::Uuid};
 use lettre::{Message, SmtpTransport, Transport, transport::smtp::authentication::Credentials};
 use once_cell::sync::Lazy;
@@ -92,11 +92,22 @@ pub async fn handle_register(State(state): State<AppState>, Json(payload): Json<
   let org_id = Uuid::new_v4();
   tracing::Span::current().record("org_id", &org_id.to_string());
 
-  let raw_api_key = generate_api_key(KeyType::Live);
-  let hash_api_key = hash_api_key(&raw_api_key);
+ 
+
+  let default_plan = sqlx::query!(
+    "SELECT id FROM plans WHERE is_default = TRUE LIMIT 1"
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to fetch default plan: {}", e)))?
+    .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "System configuration error: No default plan exists".to_string()))?;
+
+    let plan_id = default_plan.id;
+
+
   sqlx::query!(
-    "INSERT INTO organizations (id, name, api_key_hash) VALUES ($1, $2, $3)",
-        org_id, payload.org_name, hash_api_key
+    "INSERT INTO organizations (id, name, plan_id) VALUES ($1, $2, $3)",
+        org_id, payload.org_name, plan_id
   ).execute(&mut *tx).await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
   let user_id = Uuid::new_v4();
@@ -106,6 +117,16 @@ pub async fn handle_register(State(state): State<AppState>, Json(payload): Json<
         "INSERT INTO organization_user (id, org_id, email, password_hash, name, role, is_verified) VALUES ($1, $2, $3, $4, $5, 'admin', FALSE)",
         user_id, org_id, payload.email, password_hash, payload.name
     ).execute(&mut *tx).await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+
+
+    sqlx::query!(
+        "UPDATE organizations SET owner_id = $1 WHERE id = $2",
+        user_id,
+        org_id
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to set owner: {}", error)))?;
 
     tx.commit().await.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     tracing::info!("Organization and Admin User persisted in DB");
@@ -197,10 +218,10 @@ pub async fn handle_login(State(state): State<AppState>, Json(payload): Json<Log
 }
 
 
-pub async fn handle_verify_email(State(state): State<AppState>,Json(payload): Json<VerifyRequest>) 
+pub async fn handle_verify_email(State(state): State<AppState>,Path(token_verification): Path<String>) 
 -> Result<Json<AuthResponse>, (StatusCode, String)> {
     let mut conn = state.redis.get().await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Redis error".to_string()))?;
-    let redis_key = format!("verify_email:{}", payload.token);
+    let redis_key = format!("verify_email:{}", token_verification);
 
     let user_id_str: String = redis::cmd("GET")
         .arg(&redis_key)
@@ -319,6 +340,19 @@ async fn send_verification_email(email: &str, token: &str) -> Result<(), String>
   
     let frontend_url = env::var("FRONTEND_URL").unwrap_or("http://localhost:3000".to_string());
     let verification_link = format!("{}/verify?token={}", frontend_url, token);
+
+    let app_env = env::var("APP_ENV").unwrap_or("local".to_string());
+    let smtp_host = env::var("SMTP_HOST").unwrap_or_default();
+
+    if app_env == "local" || app_env == "dev" || smtp_host.is_empty() {
+        tracing::info!("==================================================");
+        tracing::info!("📧 [EMAIL MOCK - NO SE ENVIÓ NADA REAL]");
+        tracing::info!("To: {}", email);
+        tracing::info!("Link: {}", verification_link);
+        tracing::info!("==================================================");
+        return Ok(()); // <--- Retornamos éxito aquí y evitamos que lettre intente conectarse
+    }
+
 
     let recipient_email = if env::var("APP_ENV").unwrap_or_default() == "test" {
         env::var("TEST_EMAIL_RECEIVER").unwrap_or(email.to_string())
