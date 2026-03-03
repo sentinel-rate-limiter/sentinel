@@ -108,6 +108,5 @@ cargo run -p worker
 ```
 
 ![Rust](https://img.shields.io/badge/rust-1.75+-orange)
-![License](https://img.shields.io/badge/license-MIT-blue)
-![Status](https://img.shields.io/badge/status-active-green)
+
 
