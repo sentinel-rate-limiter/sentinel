@@ -23,7 +23,7 @@ Create or update an identity, assigning them to a specific policy (which dictate
 ```typescript
 import { Sdk } from "sentinel-sdk";
 
-const sdk = new Sdk({ apiKey: "sk_live_...", baseUrl: "[https://api.yourdomain.com](https://api.yourdomain.com)" });
+const sdk = new Sdk({ apiKey: "sk_live_...", baseUrl: "https://api.domain.com" });
 
 const identity = await sdk.createOrModifyIdentity({
   externalId: "user-3",
@@ -71,6 +71,13 @@ Rate Limit Exceeded (Status 429)
 }
 ```
 
+## Why not just use Nginx or Kong?
+
+- Sentinel is designed for per-organization and per-route granular billing enforcement.
+- Sub-millisecond Redis atomic evaluation.
+- Fully-typed SDK (no manual header parsing).
+- Built for product monetization use cases.
+
 
 ## Architecture Under the Hood
 Sentinel uses a Cache-First, Write-Through architecture:
@@ -87,3 +94,20 @@ Backend: Rust, Axum, Tokio, SQLx, Tower-HTTP.
 Data Stores: PostgreSQL, Redis.
 
 Client SDK: TypeScript, Node fetch, tsup (ESM/CommonJS support).
+
+
+## 🚀 Quick Start
+
+### Run with Docker
+
+```bash
+docker compose up --build
+
+cargo run -p api
+cargo run -p worker
+```
+
+![Rust](https://img.shields.io/badge/rust-1.75+-orange)
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Status](https://img.shields.io/badge/status-active-green)
+
