@@ -96,6 +96,171 @@ Data Stores: PostgreSQL, Redis.
 Client SDK: TypeScript, Node fetch, tsup (ESM/CommonJS support).
 
 
+# Sentinel Project API
+
+## API Endpoint Documentation
+
+The API exposes the following endpoints for managing identities, API keys, authentication, policies, and rules. All endpoints accept and return data in JSON format.
+
+### Authentication
+
+- **POST /auth/login**  
+  Authenticates a user and returns a JWT token.  
+  **Body:**  
+  ```json
+  { "username": "user", "password": "password" }
+  ```
+  **Example:**
+  ```bash
+  curl -X POST http://localhost:8000/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"username":"user","password":"password"}'
+  ```
+
+- **POST /auth/refresh**  
+  Refreshes the authentication token.  
+  **Body:**  
+  ```json
+  { "refresh_token": "refresh_token_value" }
+  ```
+  **Example:**
+  ```bash
+  curl -X POST http://localhost:8000/auth/refresh \
+    -H "Content-Type: application/json" \
+    -d '{"refresh_token":"refresh_token_value"}'
+  ```
+
+### Identity Management
+
+- **GET /identities**  
+  Lists all registered identities.  
+  **Example:**
+  ```bash
+  curl http://localhost:8000/identities
+  ```
+
+- **POST /identities**  
+  Creates a new identity.  
+  **Body:**  
+  ```json
+  { "name": "Name", "email": "email@example.com" }
+  ```
+  **Example:**
+  ```bash
+  curl -X POST http://localhost:8000/identities \
+    -H "Content-Type: application/json" \
+    -d '{"name":"Name","email":"email@example.com"}'
+  ```
+
+- **GET /identities/{id}**  
+  Gets the details of a specific identity.  
+  **Example:**
+  ```bash
+  curl http://localhost:8000/identities/123
+  ```
+
+- **PUT /identities/{id}**  
+  Updates the data of an identity.  
+  **Body:**  
+  ```json
+  { "name": "New Name", "email": "new@example.com" }
+  ```
+  **Example:**
+  ```bash
+  curl -X PUT http://localhost:8000/identities/123 \
+    -H "Content-Type: application/json" \
+    -d '{"name":"New Name","email":"new@example.com"}'
+  ```
+
+- **DELETE /identities/{id}**  
+  Deletes an identity.  
+  **Example:**
+  ```bash
+  curl -X DELETE http://localhost:8000/identities/123
+  ```
+
+### API Key Management
+
+- **GET /api-keys**  
+  Lists all API keys.  
+  **Example:**
+  ```bash
+  curl http://localhost:8000/api-keys
+  ```
+
+- **POST /api-keys**  
+  Creates a new API key.  
+  **Body:**  
+  ```json
+  { "name": "Key Name" }
+  ```
+  **Example:**
+  ```bash
+  curl -X POST http://localhost:8000/api-keys \
+    -H "Content-Type: application/json" \
+    -d '{"name":"Key Name"}'
+  ```
+
+- **DELETE /api-keys/{id}**  
+  Deletes an API key.  
+  **Example:**
+  ```bash
+  curl -X DELETE http://localhost:8000/api-keys/456
+  ```
+
+### Policies and Rules
+
+- **GET /policies**  
+  Lists all policies.  
+  **Example:**
+  ```bash
+  curl http://localhost:8000/policies
+  ```
+
+- **POST /policies**  
+  Creates a new policy.  
+  **Body:**  
+  ```json
+  { "name": "Example Policy", "description": "Policy description" }
+  ```
+  **Example:**
+  ```bash
+  curl -X POST http://localhost:8000/policies \
+    -H "Content-Type: application/json" \
+    -d '{"name":"Example Policy","description":"Policy description"}'
+  ```
+
+- **GET /rules**  
+  Lists all rules.  
+  **Example:**
+  ```bash
+  curl http://localhost:8000/rules
+  ```
+
+- **POST /rules**  
+  Creates a new rule.  
+  **Body:**  
+  ```json
+  { "name": "Example Rule", "condition": "Rule condition" }
+  ```
+  **Example:**
+  ```bash
+  curl -X POST http://localhost:8000/rules \
+    -H "Content-Type: application/json" \
+    -d '{"name":"Example Rule","condition":"Rule condition"}'
+  ```
+
+### Error Response Example
+
+```json
+{
+  "error": "Error description",
+  "code": 400
+}
+```
+
+---
+
 ## 🚀 Quick Start
 
 ### Run with Docker
