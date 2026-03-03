@@ -270,6 +270,7 @@ docker compose up --build
 
 cargo run -p api
 cargo run -p worker
+sqlx migrate run
 ```
 
 ![Rust](https://img.shields.io/badge/rust-1.75+-orange)
