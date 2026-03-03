@@ -1,4 +1,4 @@
-# Sentinel 🛡️
+# Sentinel
 **High-Performance Rate Limiting & API Gateway Engine**
 
 Sentinel is a distributed API management system built in Rust. It provides sub-millisecond rate limiting, API key rotation, identity management, and secure session handling using Opaque Tokens. It comes with a fully-typed TypeScript SDK for seamless client integration.
